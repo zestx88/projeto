@@ -1,0 +1,19 @@
+# ReCode local database
+.recode
+
+# Dependências
+node_modules/
+
+# Certificados locais (não devem ir para produção)
+cert/
+
+# Dados locais (não devem ir para produção)
+data/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Sistema
+.DS_Store
+Thumbs.db

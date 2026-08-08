@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tadashi</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ===================== TELA DE LOGIN ===================== -->
+  <!-- Exibida antes do usuário escolher qual dos 5 perfis usar -->
+  <div id="tela-login" class="tela-login">
+    <div class="login-card">
+      <h1 class="logo-login">🍥 Tadashi</h1>
+      <p class="login-sub">Entre com uma conta existente</p>
+
+      <form id="form-login" class="form-login">
+        <label class="campo-login">
+          <span>Handle</span>
+          <input type="text" id="input-login-handle" placeholder="@usuario" autocomplete="username">
+        </label>
+        <label class="campo-login">
+          <span>Senha</span>
+          <input type="password" id="input-login-senha" placeholder="••••••••" autocomplete="current-password">
+        </label>
+        <button type="submit" id="btn-login" class="btn-login">Entrar</button>
+        <div id="login-erro" class="login-erro hidden"></div>
+      </form>
+
+      <p class="login-sub small">Ou escolha um perfil para preencher o handle</p>
+      <div id="lista-usuarios" class="lista-usuarios">
+        <!-- Cards de usuário injetados via JS -->
+      </div>
+      <button id="btn-criar-conta" class="btn-criar-conta">Criar conta</button>
+    </div>
+  </div>
+
+  <div id="modal-criar-conta" class="modal-criar-conta hidden">
+    <div class="modal-conteudo">
+      <div class="modal-topo">
+        <h2>Criar conta</h2>
+        <button id="btn-fechar-cadastro" class="btn-fechar-cadastro" aria-label="Fechar">×</button>
+      </div>
+      <form id="form-criar-conta" class="form-criar-conta">
+        <label class="campo-linha">
+          <span>Nome</span>
+          <input type="text" id="input-nome-cadastro" required minlength="2">
+        </label>
+        <label class="campo-linha">
+          <span>Handle</span>
+          <input type="text" id="input-handle-cadastro" required minlength="2" placeholder="ex: @meunome">
+        </label>
+        <label class="campo-linha">
+          <span>Bio</span>
+          <textarea id="input-bio-cadastro" rows="3" maxlength="160" placeholder="Conte algo sobre você"></textarea>
+        </label>
+        <label class="campo-linha">
+          <span>Senha</span>
+          <input type="password" id="input-senha-cadastro" required minlength="6" autocomplete="new-password">
+        </label>
+        <label class="campo-linha">
+          <span>Confirmar senha</span>
+          <input type="password" id="input-confirmar-senha-cadastro" required minlength="6" autocomplete="new-password">
+        </label>
+        <div class="form-criar-conta-acoes">
+          <button type="button" id="btn-cancelar-cadastro" class="btn-secundario">Cancelar</button>
+          <button type="submit" class="btn-postar">Criar conta</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===================== APP PRINCIPAL ===================== -->
+  <div id="app" class="app hidden">
+
+    <!-- ---------- HEADER ---------- -->
+    <header class="header">
+      <div class="header-logo">🍥 Tadashi</div>
+      <div class="header-acoes">
+        <button id="btn-tema" class="btn-icone" title="Alternar tema">🌙</button>
+        <div class="header-usuario">
+          <img id="header-avatar" class="avatar avatar-sm" src="" alt="avatar">
+          <span id="header-handle"></span>
+        </div>
+      </div>
+    </header>
+
+    <div class="layout">
+
+      <!-- ---------- SIDEBAR ESQUERDA ---------- -->
+      <aside class="sidebar-esquerda">
+        <nav class="nav-sidebar">
+          <a href="#" class="nav-item nav-ativo" data-pagina="inicio">🏠 <span>Início</span></a>
+          <a href="#" class="nav-item" data-pagina="explorar">🔍 <span>Explorar</span></a>
+          <a href="#" class="nav-item" data-pagina="videos">▶️ <span>Vídeos</span></a>
+          <a href="#" class="nav-item" data-pagina="notificacoes">🔔 <span>Notificações</span> <span id="badge-notif" class="badge hidden">0</span></a>
+          <a href="#" class="nav-item" data-pagina="mensagens">✉️ <span>Mensagens</span></a>
+          <a href="#" class="nav-item" data-pagina="perfil">👤 <span>Perfil</span></a>
+        </nav>
+        <button id="btn-sair" class="btn-sair">Sair</button>
+      </aside>
+
+      <!-- ---------- FEED CENTRAL ---------- -->
+      <main class="feed">
+
+        <!-- ===== PÁGINA: INÍCIO ===== -->
+        <div id="pagina-inicio" class="pagina">
+          <div class="pagina-titulo">Início</div>
+
+          <!-- Caixa de novo post -->
+          <section class="caixa-post">
+            <div class="caixa-post-topo">
+              <img id="compositor-avatar" class="avatar" src="" alt="avatar">
+              <textarea id="input-post" maxlength="280" placeholder="O que está acontecendo?"></textarea>
+            </div>
+            <div id="preview-imagem-wrap" class="preview-imagem-wrap hidden">
+              <img id="preview-imagem" src="" alt="preview">
+              <button id="btn-remover-imagem" class="btn-remover-img">✕</button>
+            </div>
+            <div class="caixa-post-baixo">
+              <div class="caixa-post-ferramentas">
+                <button id="btn-add-imagem" class="btn-icone" title="Adicionar imagem do dispositivo">🖼️</button>
+                <input type="file" id="input-arquivo-imagem" accept="image/*" class="hidden">
+                <button id="btn-add-video" class="btn-icone" title="Adicionar vídeo do dispositivo">🎬</button>
+                <input type="file" id="input-arquivo-video" accept="video/*" class="hidden">
+                <span id="contador-caracteres" class="contador">280</span>
+              </div>
+              <button id="btn-postar" class="btn-postar" disabled>Postar</button>
+            </div>
+            <div id="preview-video-wrap" class="preview-video-wrap hidden">
+              <video id="preview-video" controls src="" aria-label="preview do vídeo"></video>
+              <button id="btn-remover-video" class="btn-remover-img">✕</button>
+            </div>
+          </section>
+
+          <!-- Lista de posts (feed em tempo real) -->
+          <section id="lista-posts" class="lista-posts">
+            <!-- Posts injetados via JS -->
+          </section>
+
+          <!-- Indicador de "carregando mais" para scroll infinito simulado -->
+          <div id="carregando-mais" class="carregando-mais hidden">Carregando mais posts...</div>
+        </div>
+
+        <!-- ===== PÁGINA: VIDEOS ===== -->
+        <div id="pagina-videos" class="pagina hidden">
+          <div class="pagina-titulo">Vídeos</div>
+          <section id="lista-videos" class="lista-videos"></section>
+        </div>
+
+        <!-- ===== PÁGINA: EXPLORAR (busca) ===== -->
+        <div id="pagina-explorar" class="pagina hidden">
+          <div class="pagina-titulo">
+            <input type="text" id="input-busca" class="input-busca" placeholder="Buscar por texto, nome ou @handle">
+          </div>
+          <section id="lista-busca" class="lista-posts"></section>
+        </div>
+
+        <!-- ===== PÁGINA: PERFIL ===== -->
+        <div id="pagina-perfil" class="pagina hidden">
+          <div class="pagina-titulo">Perfil</div>
+          <section class="cabecalho-perfil">
+            <div class="perfil-avatar-wrap">
+              <img id="perfil-avatar" class="avatar avatar-grande" src="" alt="avatar">
+              <button id="btn-mudar-avatar" class="btn-mudar-avatar hidden" title="Mudar foto de perfil">📷</button>
+              <input type="file" id="input-avatar-arquivo" accept="image/*" class="hidden">
+            </div>
+            <div id="perfil-nome" class="perfil-nome"></div>
+            <div id="perfil-handle" class="perfil-handle"></div>
+            <div id="perfil-bio" class="perfil-bio"></div>
+            <div class="perfil-stats">
+              <span><strong id="perfil-seguindo">0</strong> Seguindo</span>
+              <span><strong id="perfil-seguidores">0</strong> Seguidores</span>
+              <span><strong id="perfil-posts-qtd">0</strong> Posts</span>
+            </div>
+          </section>
+          <section id="lista-posts-perfil" class="lista-posts"></section>
+        </div>
+
+        <!-- ===== PÁGINA: NOTIFICAÇÕES ===== -->
+        <div id="pagina-notificacoes" class="pagina hidden">
+          <div class="pagina-titulo">Notificações</div>
+          <section id="lista-notificacoes" class="lista-notificacoes"></section>
+        </div>
+
+        <!-- ===== PÁGINA: MENSAGENS ===== -->
+        <div id="pagina-mensagens" class="pagina hidden">
+          <div class="pagina-titulo">Mensagens</div>
+          <section class="mensagens-layout">
+            <aside id="lista-contatos" class="lista-contatos"></aside>
+            <section class="conversa-wrap">
+              <div id="conversa-header" class="conversa-header"></div>
+              <div id="lista-mensagens" class="lista-mensagens"></div>
+              <form id="form-mensagem" class="form-mensagem">
+                <input type="text" id="input-mensagem" maxlength="280" placeholder="Escreva uma mensagem...">
+                <button type="submit">Enviar</button>
+              </form>
+            </section>
+          </section>
+        </div>
+
+      </main>
+
+      <!-- ---------- SIDEBAR DIREITA (tendências/sugestões) ---------- -->
+      <aside class="sidebar-direita">
+        <div class="card-lateral">
+          <h3>Tendências para você</h3>
+          <div class="tendencia"><span class="tendencia-cat">Tecnologia · Alta</span><strong>#Tadashi</strong><span class="tendencia-qtd">12,4 mil posts</span></div>
+          <div class="tendencia"><span class="tendencia-cat">Brasil · Tendência</span><strong>#JavaScript</strong><span class="tendencia-qtd">8.921 posts</span></div>
+          <div class="tendencia"><span class="tendencia-cat">Esportes · Alta</span><strong>#Libertadores</strong><span class="tendencia-qtd">21,3 mil posts</span></div>
+          <div class="tendencia"><span class="tendencia-cat">Entretenimento</span><strong>#SocketIO</strong><span class="tendencia-qtd">3.402 posts</span></div>
+        </div>
+
+        <div class="card-lateral">
+          <h3>Quem seguir</h3>
+          <div id="sugestoes-usuarios">
+            <!-- Sugestões injetadas via JS -->
+          </div>
+        </div>
+      </aside>
+
+    </div>
+  </div>
+
+  <!-- ===================== TOASTS DE NOTIFICAÇÃO ===================== -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

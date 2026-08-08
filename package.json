@@ -1,0 +1,15 @@
+{
+  "name": "tadashi",
+  "version": "1.0.0",
+  "description": "Rede social Tadashi - clone do Twitter/X feito com Node.js, Express, Socket.io e lowdb",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "seed": "node seed.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5",
+    "lowdb": "^1.0.0"
+  }
+}
