@@ -1,6 +1,8 @@
 // ============================================================
 // TADASHI - server.js
-// Backend: Express (rotas HTTP/API) + Socket.io (tempo real) + lowdb (persistência em JSON)
+// Backend: Express + Socket.io + lowdb
+// Auth: tokens HMAC (Bearer) em REST e Socket.io
+// Mídia: arquivos em /public/uploads (não base64 no JSON)
 // ============================================================
 
 const express = require('express');
@@ -9,42 +11,67 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
 const { Server } = require('socket.io');
 
-// --- lowdb (versão 1.x, API síncrona, ótima para projetos pequenos) ---
 const low = require('lowdb');
 const FileSync = require('lowdb/adapters/FileSync');
 
-// Garante que o diretório de dados exista (criado automaticamente em produção)
+// -------------------- Diretórios --------------------
 const dataDir = path.join(__dirname, 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
+const uploadsDir = path.join(__dirname, 'public', 'uploads');
+
+for (const dir of [dataDir, uploadsDir]) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-// Cada "banco" é um arquivo JSON separado dentro de /data
+// -------------------- Bancos lowdb --------------------
 const usersDb = low(new FileSync(path.join(dataDir, 'users.json')));
 const postsDb = low(new FileSync(path.join(dataDir, 'posts.json')));
 const messagesDb = low(new FileSync(path.join(dataDir, 'messages.json')));
+const notificationsDb = low(new FileSync(path.join(dataDir, 'notifications.json')));
+const sessionsDb = low(new FileSync(path.join(dataDir, 'sessions.json')));
 
-// Garante valores padrão caso os arquivos estejam vazios
 usersDb.defaults({ users: [] }).write();
 postsDb.defaults({ posts: [] }).write();
 messagesDb.defaults({ messages: [] }).write();
+notificationsDb.defaults({ notifications: [] }).write();
+sessionsDb.defaults({ sessions: [] }).write();
 
+// -------------------- Constantes --------------------
 const PBKDF2_ITERATIONS = 100000;
 const PBKDF2_KEYLEN = 64;
 const PBKDF2_DIGEST = 'sha512';
+const TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 dias
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB
+const MAX_VIDEO_BYTES = 40 * 1024 * 1024; // 40 MB
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024; // 2 MB
+const MAX_NOTIFICACOES_POR_USER = 100;
+
+const AUTH_SECRET = process.env.AUTH_SECRET || 'tadashi-dev-secret-change-me';
 
 const palavrasOfensivas = [
-  'idiota', 'imbecil', 'burro', 'bosta', 'lixo', 'pqp', 'puta', 'puta',
-  'merda', 'desgraçado', 'desgraçada', 'fdp', 'filhodaputa', 'cuzão', 'cuzao', ''
+  'idiota', 'imbecil', 'burro', 'bosta', 'lixo', 'pqp', 'puta',
+  'merda', 'desgraçado', 'desgraçada', 'fdp', 'filhodaputa', 'cuzão', 'cuzao'
 ];
+
+// -------------------- Utilitários --------------------
+function gerarId(prefixo) {
+  return `${prefixo}_${Date.now().toString(36)}_${crypto.randomBytes(6).toString('hex')}`;
+}
 
 function textoTemPalavraOfensiva(texto) {
   if (!texto || !String(texto).trim()) return false;
+  const normalizado = String(texto)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
 
-  const textoNormalizado = String(texto).toLowerCase();
-  return palavrasOfensivas.some((palavra) => textoNormalizado.includes(palavra));
+  return palavrasOfensivas.some((palavra) => {
+    if (!palavra) return false;
+    const p = palavra.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    return normalizado.includes(p);
+  });
 }
 
 function criarPasswordHash(password) {
@@ -57,39 +84,227 @@ function verificarPassword(password, passwordHash) {
   if (!password || !passwordHash || !passwordHash.includes(':')) return false;
   const [salt, hashEsperado] = passwordHash.split(':');
   const hashTentativa = crypto.pbkdf2Sync(password, salt, PBKDF2_ITERATIONS, PBKDF2_KEYLEN, PBKDF2_DIGEST).toString('hex');
-  const hashEsperadoBuffer = Buffer.from(hashEsperado, 'hex');
-  const hashTentativaBuffer = Buffer.from(hashTentativa, 'hex');
-
-  if (hashEsperadoBuffer.length !== hashTentativaBuffer.length) return false;
-
-  return crypto.timingSafeEqual(hashEsperadoBuffer, hashTentativaBuffer);
+  const a = Buffer.from(hashEsperado, 'hex');
+  const b = Buffer.from(hashTentativa, 'hex');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
 
-// --- Configuração do servidor ---
+function usuarioPublico(usuario) {
+  if (!usuario) return null;
+  const clone = { ...usuario };
+  delete clone.passwordHash;
+  return clone;
+}
+
+function obterUsuarioPorId(id) {
+  return usersDb.get('users').find({ id }).value() || null;
+}
+
+function obterUsuarioPorHandle(handle) {
+  const h = String(handle || '').trim().toLowerCase();
+  if (!h) return null;
+  return usersDb.get('users').find((u) => String(u.handle).toLowerCase() === h).value() || null;
+}
+
+function limparSessoesExpiradas() {
+  const agora = Date.now();
+  sessionsDb.get('sessions').remove((s) => s.expiresAt <= agora).write();
+}
+
+function criarSessao(userId) {
+  limparSessoesExpiradas();
+  const token = crypto.randomBytes(32).toString('hex');
+  const tokenHash = crypto.createHmac('sha256', AUTH_SECRET).update(token).digest('hex');
+  const sessao = {
+    id: gerarId('s'),
+    userId,
+    tokenHash,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + TOKEN_TTL_MS
+  };
+  sessionsDb.get('sessions').push(sessao).write();
+  return token;
+}
+
+function revogarSessoesDoUsuario(userId, tokenAtual) {
+  if (tokenAtual) {
+    const tokenHash = crypto.createHmac('sha256', AUTH_SECRET).update(tokenAtual).digest('hex');
+    sessionsDb.get('sessions').remove({ tokenHash }).write();
+    return;
+  }
+  sessionsDb.get('sessions').remove({ userId }).write();
+}
+
+function validarToken(token) {
+  if (!token || typeof token !== 'string') return null;
+  limparSessoesExpiradas();
+  const tokenHash = crypto.createHmac('sha256', AUTH_SECRET).update(token).digest('hex');
+  const sessao = sessionsDb.get('sessions').find({ tokenHash }).value();
+  if (!sessao || sessao.expiresAt <= Date.now()) return null;
+  const usuario = obterUsuarioPorId(sessao.userId);
+  if (!usuario) return null;
+  return { usuario, sessao, token };
+}
+
+function extrairBearer(req) {
+  const header = req.headers.authorization || req.headers.Authorization || '';
+  if (typeof header === 'string' && header.toLowerCase().startsWith('bearer ')) {
+    return header.slice(7).trim();
+  }
+  if (req.query && req.query.token) return String(req.query.token);
+  return null;
+}
+
+function middlewareAuth(req, res, next) {
+  const token = extrairBearer(req);
+  const auth = validarToken(token);
+  if (!auth) {
+    return res.status(401).json({ error: 'Não autenticado. Faça login novamente.' });
+  }
+  req.usuario = auth.usuario;
+  req.token = auth.token;
+  req.sessao = auth.sessao;
+  next();
+}
+
+function middlewareAuthOpcional(req, res, next) {
+  const token = extrairBearer(req);
+  const auth = validarToken(token);
+  if (auth) {
+    req.usuario = auth.usuario;
+    req.token = auth.token;
+    req.sessao = auth.sessao;
+  }
+  next();
+}
+
+function extensaoDeMime(mime) {
+  const mapa = {
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/png': '.png',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    'video/mp4': '.mp4',
+    'video/webm': '.webm',
+    'video/ogg': '.ogv',
+    'video/quicktime': '.mov'
+  };
+  return mapa[mime] || null;
+}
+
+/**
+ * Converte data URL base64 em arquivo em /public/uploads.
+ * Retorna caminho público (/uploads/...) ou null.
+ * Se já for URL/caminho relativo, devolve como está.
+ */
+function salvarMidiaBase64(dataUrl, tipoEsperado, limiteBytes) {
+  if (!dataUrl || typeof dataUrl !== 'string') return null;
+
+  const texto = dataUrl.trim();
+  if (!texto) return null;
+
+  // Já é URL ou caminho servido estaticamente
+  if (
+    texto.startsWith('/uploads/') ||
+    texto.startsWith('http://') ||
+    texto.startsWith('https://')
+  ) {
+    return texto;
+  }
+
+  // data:[mime];base64,....
+  const match = /^data:([a-zA-Z0-9/+.-]+);base64,(.+)$/s.exec(texto);
+  if (!match) return null;
+
+  const mime = match[1].toLowerCase();
+  const b64 = match[2];
+
+  if (tipoEsperado === 'image' && !mime.startsWith('image/')) {
+    throw new Error('Arquivo de imagem inválido.');
+  }
+  if (tipoEsperado === 'video' && !mime.startsWith('video/')) {
+    throw new Error('Arquivo de vídeo inválido.');
+  }
+
+  const ext = extensaoDeMime(mime);
+  if (!ext) throw new Error('Tipo de arquivo não suportado.');
+
+  const buffer = Buffer.from(b64, 'base64');
+  if (!buffer.length) throw new Error('Arquivo vazio.');
+  if (buffer.length > limiteBytes) {
+    throw new Error(`Arquivo muito grande (máx. ${Math.round(limiteBytes / (1024 * 1024))} MB).`);
+  }
+
+  const nome = `${Date.now().toString(36)}_${crypto.randomBytes(8).toString('hex')}${ext}`;
+  const caminhoAbs = path.join(uploadsDir, nome);
+  fs.writeFileSync(caminhoAbs, buffer);
+  return `/uploads/${nome}`;
+}
+
+function criarNotificacao(paraUserId, mensagem, tipo, deUserId) {
+  if (!paraUserId || paraUserId === deUserId) return null;
+
+  const notificacao = {
+    id: gerarId('n'),
+    paraUserId,
+    deUserId: deUserId || null,
+    tipo: tipo || 'geral',
+    mensagem: String(mensagem || '').slice(0, 280),
+    lida: false,
+    createdAt: Date.now()
+  };
+
+  notificationsDb.get('notifications').unshift(notificacao).write();
+
+  // Mantém só as N mais recentes por usuário
+  const doUser = notificationsDb.get('notifications')
+    .filter({ paraUserId })
+    .sortBy('createdAt')
+    .reverse()
+    .value();
+
+  if (doUser.length > MAX_NOTIFICACOES_POR_USER) {
+    const manterIds = new Set(doUser.slice(0, MAX_NOTIFICACOES_POR_USER).map((n) => n.id));
+    notificationsDb.get('notifications')
+      .remove((n) => n.paraUserId === paraUserId && !manterIds.has(n.id))
+      .write();
+  }
+
+  return notificacao;
+}
+
+function ipLocalLan() {
+  const ifaces = os.networkInterfaces();
+  for (const nome of Object.keys(ifaces)) {
+    for (const info of ifaces[nome] || []) {
+      if (info.family === 'IPv4' && !info.internal) return info.address;
+    }
+  }
+  return '127.0.0.1';
+}
+
+// -------------------- Servidor HTTP/HTTPS --------------------
 const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 let server;
-let io;
 
 if (IS_PRODUCTION) {
-  // Em produção (Render), o HTTPS é fornecido pelo proxy do Render.
-  // O servidor escuta em HTTP na porta definida pelo Render.
   server = http.createServer(app);
   console.log('🌐 Modo produção: usando HTTP (HTTPS fornecido pelo Render)');
 } else {
-  // Localmente, usamos HTTPS com certificados mkcert confiáveis
   const certPath = path.join(__dirname, 'cert', 'tadashi-cert.pem');
   const keyPath = path.join(__dirname, 'cert', 'tadashi-key.pem');
 
   if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
-    const httpsOptions = {
+    server = https.createServer({
       key: fs.readFileSync(keyPath),
       cert: fs.readFileSync(certPath)
-    };
-    server = https.createServer(httpsOptions, app);
+    }, app);
     console.log('🔒 Modo local: usando HTTPS com certificado mkcert');
   } else {
     server = http.createServer(app);
@@ -97,28 +312,61 @@ if (IS_PRODUCTION) {
   }
 }
 
-io = new Server(server, {
-  maxHttpBufferSize: 100 * 1024 * 1024 // aceita data URL de vídeo/imagem em base64 pela conexão Socket.IO
+const io = new Server(server, {
+  maxHttpBufferSize: 45 * 1024 * 1024
 });
 
-app.use(express.json({ limit: '50mb' })); // limit maior por causa de imagens e vídeos em base64
-app.use(express.static(path.join(__dirname, 'public'))); // serve o frontend estático
+app.use(express.json({ limit: '45mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
 
-// ===================== ROTAS REST (API) ======================
+// -------------------- Middleware de Segurança --------------------
+// Headers de segurança HTTP (proteção contra clickjacking, MIME sniffing, etc.)
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  next();
+});
 
-// GET /api/users -> retorna os usuários cadastrados (para tela de login)
+// Rate limiter em memória para proteger endpoints de autenticação
+// Evita brute-force em login e cadastro de contas
+const rateLimitStore = new Map();
+function rateLimit(maxReqs, windowMs) {
+  return (req, res, next) => {
+    const ident = `${req.ip}:${req.body ? (req.body.handle || '') : ''}`;
+    const agora = Date.now();
+    const record = rateLimitStore.get(ident);
+    if (!record || agora > record.resetAt) {
+      rateLimitStore.set(ident, { count: 1, resetAt: agora + windowMs });
+      return next();
+    }
+    record.count++;
+    if (record.count > maxReqs) {
+      return res.status(429).json({ error: 'Muitas tentativas. Tente novamente em breve.' });
+    }
+    next();
+  };
+}
+// Limpa entradas expiradas periodicamente para não vazar memória
+setInterval(() => {
+  const agora = Date.now();
+  for (const [chave, rec] of rateLimitStore.entries()) {
+    if (agora > rec.resetAt) rateLimitStore.delete(chave);
+  }
+}, 60000);
+
+// ===================== ROTAS REST ======================
+
+// Lista pública de usuários (sem senha) — útil na tela de login
 app.get('/api/users', (req, res) => {
-  const users = usersDb.get('users').value();
-  const response = users.map((u) => {
-    const clone = { ...u };
-    delete clone.passwordHash;
-    return clone;
-  });
-  res.json(response);
+  const users = usersDb.get('users').value().map(usuarioPublico);
+  res.json(users);
 });
 
-// POST /api/login -> login por handle e senha
-app.post('/api/login', (req, res) => {
+// Login
+app.post('/api/login', rateLimit(5, 60000), (req, res) => {
   const { handle, password } = req.body || {};
   const handleRecebido = String(handle || '').trim().toLowerCase();
   const senhaRecebida = String(password || '');
@@ -127,129 +375,203 @@ app.post('/api/login', (req, res) => {
     return res.status(400).json({ error: 'Informe handle e senha.' });
   }
 
-  const usuario = usersDb.get('users')
-    .find((u) => String(u.handle).toLowerCase() === handleRecebido)
-    .value();
-
-  if (!usuario || !usuario.passwordHash) {
+  const usuario = obterUsuarioPorHandle(handleRecebido);
+  if (!usuario || !usuario.passwordHash || !verificarPassword(senhaRecebida, usuario.passwordHash)) {
     return res.status(401).json({ error: 'Credenciais inválidas.' });
   }
 
-  const senhaValida = verificarPassword(senhaRecebida, usuario.passwordHash);
-  if (!senhaValida) {
-    return res.status(401).json({ error: 'Credenciais inválidas.' });
-  }
-
-  const usuarioPublico = { ...usuario };
-  delete usuarioPublico.passwordHash;
-  res.json(usuarioPublico);
+  const token = criarSessao(usuario.id);
+  res.json({ token, user: usuarioPublico(usuario) });
 });
 
-// POST /api/users/:id/avatar -> atualiza a foto de perfil do usuário
-app.post('/api/users/:id/avatar', (req, res) => {
-  const userId = req.params.id;
-  const { avatar } = req.body || {};
-  const avatarTexto = String(avatar || '').trim();
-
-  if (!userId) {
-    return res.status(400).json({ error: 'Usuário inválido.' });
-  }
-
-  if (!avatarTexto) {
-    return res.status(400).json({ error: 'Selecione uma imagem de perfil.' });
-  }
-
-  const usuario = usersDb.get('users').find({ id: userId }).value();
-  if (!usuario) {
-    return res.status(404).json({ error: 'Usuário não encontrado.' });
-  }
-
-  usuario.avatar = avatarTexto;
-  usersDb.get('users').find({ id: userId }).assign(usuario).write();
-
-  const usuarioPublico = { ...usuario };
-  delete usuarioPublico.passwordHash;
-
-  io.emit('usuarioAtualizado', {
-    id: usuario.id,
-    avatar: usuario.avatar,
-    name: usuario.name,
-    handle: usuario.handle
-  });
-
-  res.json(usuarioPublico);
-});
-
-// POST /api/users -> cria uma nova conta do usuário
-app.post('/api/users', (req, res) => {
+// Cadastro
+app.post('/api/users', rateLimit(5, 60000), (req, res) => {
   const { name, handle, bio, avatar, password } = req.body || {};
   const nome = String(name || '').trim();
-  const bioTexto = String(bio || '').trim();
+  const bioTexto = String(bio || '').trim().slice(0, 160);
   const handleTexto = String(handle || '').trim();
-  const senhaTexto = String(password || '').trim();
+  const senhaTexto = String(password || '');
 
   if (!nome || nome.length < 2) {
     return res.status(400).json({ error: 'Informe um nome com pelo menos 2 caracteres.' });
   }
-
-  if (!handleTexto || handleTexto.length < 2) {
+  if (!handleTexto || handleTexto.replace(/^@/, '').length < 2) {
     return res.status(400).json({ error: 'Informe um @handle válido.' });
   }
-
   if (!senhaTexto || senhaTexto.length < 6) {
     return res.status(400).json({ error: 'A senha deve ter pelo menos 6 caracteres.' });
   }
 
-  const handleNormalizado = handleTexto.startsWith('@') ? handleTexto : `@${handleTexto}`;
-  const handleComercial = handleNormalizado.toLowerCase();
+  const handleNormalizado = (handleTexto.startsWith('@') ? handleTexto : `@${handleTexto}`).toLowerCase();
+  if (!/^@[a-z0-9_]{2,30}$/.test(handleNormalizado)) {
+    return res.status(400).json({ error: 'Handle inválido. Use apenas letras, números e _ (2-30).' });
+  }
 
-  const jaExiste = usersDb.get('users').find({ handle: handleComercial }).value();
-  if (jaExiste) {
+  if (obterUsuarioPorHandle(handleNormalizado)) {
     return res.status(409).json({ error: 'Este @handle já está em uso.' });
   }
 
+  let avatarUrl = `https://i.pravatar.cc/150?img=${Math.floor(1 + Math.random() * 70)}`;
+  if (avatar) {
+    try {
+      avatarUrl = salvarMidiaBase64(avatar, 'image', MAX_AVATAR_BYTES) || avatarUrl;
+    } catch (err) {
+      return res.status(400).json({ error: err.message || 'Avatar inválido.' });
+    }
+  }
+
   const novoUsuario = {
-    id: `u_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    id: gerarId('u'),
     name: nome,
-    handle: handleComercial,
-    avatar: avatar || `https://i.pravatar.cc/150?img=${Math.floor(1 + Math.random() * 70)}`,
+    handle: handleNormalizado,
+    avatar: avatarUrl,
     bio: bioTexto || 'Novo membro do Tadashi.',
     following: [],
-    passwordHash: criarPasswordHash(senhaTexto)
+    role: 'user',
+    passwordHash: criarPasswordHash(senhaTexto),
+    createdAt: Date.now()
   };
 
   usersDb.get('users').push(novoUsuario).write();
-  const usuarioPublico = { ...novoUsuario };
-  delete usuarioPublico.passwordHash;
-  res.status(201).json(usuarioPublico);
+
+  const token = criarSessao(novoUsuario.id);
+  res.status(201).json({ token, user: usuarioPublico(novoUsuario) });
 });
 
-// GET /api/messages/:userId -> lista mensagens do usuário autenticado
-app.get('/api/messages/:userId', (req, res) => {
+// Sessão atual
+app.get('/api/me', middlewareAuth, (req, res) => {
+  res.json(usuarioPublico(req.usuario));
+});
+
+// Logout
+app.post('/api/logout', middlewareAuth, (req, res) => {
+  revogarSessoesDoUsuario(req.usuario.id, req.token);
+  res.json({ ok: true });
+});
+
+// Atualizar avatar (somente o próprio usuário)
+app.post('/api/users/me/avatar', middlewareAuth, (req, res) => {
+  const { avatar } = req.body || {};
+  if (!avatar || !String(avatar).trim()) {
+    return res.status(400).json({ error: 'Selecione uma imagem de perfil.' });
+  }
+
+  let avatarUrl;
+  try {
+    avatarUrl = salvarMidiaBase64(String(avatar).trim(), 'image', MAX_AVATAR_BYTES);
+  } catch (err) {
+    return res.status(400).json({ error: err.message || 'Imagem inválida.' });
+  }
+  if (!avatarUrl) {
+    return res.status(400).json({ error: 'Imagem de perfil inválida.' });
+  }
+
+  usersDb.get('users').find({ id: req.usuario.id }).assign({ avatar: avatarUrl }).write();
+  const atualizado = obterUsuarioPorId(req.usuario.id);
+
+  // Atualiza avatar embutido nos posts do autor
+  const posts = postsDb.get('posts').value();
+  posts.forEach((p) => {
+    if (p.authorId === atualizado.id) {
+      p.authorAvatar = avatarUrl;
+      p.authorName = atualizado.name;
+      p.authorHandle = atualizado.handle;
+    }
+  });
+  postsDb.set('posts', posts).write();
+
+  io.emit('usuarioAtualizado', {
+    id: atualizado.id,
+    avatar: atualizado.avatar,
+    name: atualizado.name,
+    handle: atualizado.handle
+  });
+
+  res.json(usuarioPublico(atualizado));
+});
+
+// Compat: rota antiga de avatar com id — só permite se for o próprio usuário
+app.post('/api/users/:id/avatar', middlewareAuth, (req, res) => {
+  if (req.params.id !== req.usuario.id) {
+    return res.status(403).json({ error: 'Você só pode alterar o próprio avatar.' });
+  }
+
+  const { avatar } = req.body || {};
+  if (!avatar || !String(avatar).trim()) {
+    return res.status(400).json({ error: 'Selecione uma imagem de perfil.' });
+  }
+
+  let avatarUrl;
+  try {
+    avatarUrl = salvarMidiaBase64(String(avatar).trim(), 'image', MAX_AVATAR_BYTES);
+  } catch (err) {
+    return res.status(400).json({ error: err.message || 'Imagem inválida.' });
+  }
+  if (!avatarUrl) {
+    return res.status(400).json({ error: 'Imagem de perfil inválida.' });
+  }
+
+  usersDb.get('users').find({ id: req.usuario.id }).assign({ avatar: avatarUrl }).write();
+  const atualizado = obterUsuarioPorId(req.usuario.id);
+
+  const posts = postsDb.get('posts').value();
+  posts.forEach((p) => {
+    if (p.authorId === atualizado.id) {
+      p.authorAvatar = avatarUrl;
+      p.authorName = atualizado.name;
+      p.authorHandle = atualizado.handle;
+    }
+  });
+  postsDb.set('posts', posts).write();
+
+  io.emit('usuarioAtualizado', {
+    id: atualizado.id,
+    avatar: atualizado.avatar,
+    name: atualizado.name,
+    handle: atualizado.handle
+  });
+
+  res.json(usuarioPublico(atualizado));
+});
+
+
+// Mensagens do usuário autenticado
+app.get('/api/messages', middlewareAuth, (req, res) => {
+  const userId = req.usuario.id;
   const mensagens = messagesDb.get('messages')
-    .filter((m) => m.fromId === req.params.userId || m.toId === req.params.userId)
+    .filter((m) => m.fromId === userId || m.toId === userId)
     .sortBy('createdAt')
     .value();
-
   res.json(mensagens);
 });
 
-// POST /api/messages -> cria e persiste uma mensagem privada
-app.post('/api/messages', (req, res) => {
-  const { fromId, toId, texto } = req.body || {};
-  const remetente = usersDb.get('users').find({ id: fromId }).value();
-  const destinatario = usersDb.get('users').find({ id: toId }).value();
+// Compat antiga
+app.get('/api/messages/:userId', middlewareAuth, (req, res) => {
+  if (req.params.userId !== req.usuario.id) {
+    return res.status(403).json({ error: 'Acesso negado às mensagens de outro usuário.' });
+  }
+  const mensagens = messagesDb.get('messages')
+    .filter((m) => m.fromId === req.usuario.id || m.toId === req.usuario.id)
+    .sortBy('createdAt')
+    .value();
+  res.json(mensagens);
+});
 
-  if (!remetente || !destinatario || !texto || String(texto).trim().length === 0) {
+// Enviar mensagem (REST)
+app.post('/api/messages', middlewareAuth, (req, res) => {
+  const { toId, texto } = req.body || {};
+  const fromId = req.usuario.id;
+  const destinatario = obterUsuarioPorId(toId);
+
+  if (!destinatario || !texto || !String(texto).trim()) {
     return res.status(400).json({ error: 'Mensagem inválida.' });
   }
-
   if (textoTemPalavraOfensiva(texto)) {
     return res.status(400).json({ error: 'Mensagem bloqueada por conteúdo ofensivo.' });
   }
 
   const mensagem = {
-    id: 'm_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+    id: gerarId('m'),
     fromId,
     toId,
     texto: String(texto).trim().slice(0, 280),
@@ -258,17 +580,24 @@ app.post('/api/messages', (req, res) => {
 
   messagesDb.get('messages').push(mensagem).write();
   io.emit('mensagemCriada', mensagem);
+
+  const notif = criarNotificacao(
+    toId,
+    `${req.usuario.name} enviou uma mensagem`,
+    'mensagem',
+    fromId
+  );
+  if (notif) io.emit('notificacao', notif);
+
   res.status(201).json(mensagem);
 });
 
-// GET /api/posts -> retorna todos os posts, mais recentes primeiro
+// Posts
 app.get('/api/posts', (req, res) => {
   const posts = postsDb.get('posts').sortBy('createdAt').reverse().value();
   res.json(posts);
 });
 
-// GET /api/posts/usuario/:id -> retorna apenas os posts (e reposts) de um usuário específico
-// usado na página de Perfil
 app.get('/api/posts/usuario/:id', (req, res) => {
   const posts = postsDb.get('posts')
     .filter((p) => p.authorId === req.params.id || (p.repostBy && p.repostBy.id === req.params.id))
@@ -278,83 +607,137 @@ app.get('/api/posts/usuario/:id', (req, res) => {
   res.json(posts);
 });
 
-// ===================== SOCKET.IO (tempo real) ======================
-// Toda a lógica de criar/curtir/repostar/deletar posts acontece aqui,
-// pois precisamos emitir os eventos para TODOS os clientes conectados
-// instantaneamente (broadcast), e não apenas responder quem fez a ação.
+// Notificações persistentes
+app.get('/api/notifications', middlewareAuth, (req, res) => {
+  const lista = notificationsDb.get('notifications')
+    .filter({ paraUserId: req.usuario.id })
+    .sortBy('createdAt')
+    .reverse()
+    .value();
+  res.json(lista);
+});
+
+app.post('/api/notifications/read', middlewareAuth, (req, res) => {
+  const todas = notificationsDb.get('notifications').value();
+  let alterou = false;
+  todas.forEach((n) => {
+    if (n.paraUserId === req.usuario.id && !n.lida) {
+      n.lida = true;
+      alterou = true;
+    }
+  });
+  if (alterou) notificationsDb.set('notifications', todas).write();
+  res.json({ ok: true });
+});
+
+// ===================== SOCKET.IO ======================
+io.use((socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+    const auth = validarToken(token);
+    if (!auth) return next(new Error('Não autenticado'));
+    socket.userId = auth.usuario.id;
+    socket.usuario = auth.usuario;
+    next();
+  } catch (err) {
+    next(new Error('Não autenticado'));
+  }
+});
 
 io.on('connection', (socket) => {
-  console.log(`🔌 Novo cliente conectado: ${socket.id}`);
+  console.log(`🔌 Cliente conectado: ${socket.id} (${socket.usuario.handle})`);
+  socket.join(`user:${socket.userId}`);
 
-  // --- Evento: novo post criado por um usuário ---
-  socket.on('novoPost', (dados) => {
-    // dados = { authorId, texto, imagem }
-    const autor = usersDb.get('users').find({ id: dados.authorId }).value();
+  socket.on('novoPost', (dados = {}) => {
+    const autor = obterUsuarioPorId(socket.userId);
     if (!autor) return;
 
-    if (textoTemPalavraOfensiva(dados.texto)) return;
+    const texto = String(dados.texto || '').slice(0, 280);
+    if (textoTemPalavraOfensiva(texto)) {
+      socket.emit('erroAcao', { error: 'Post bloqueado por conteúdo ofensivo.' });
+      return;
+    }
+
+    let imagem = null;
+    let video = null;
+    try {
+      if (dados.imagem) imagem = salvarMidiaBase64(dados.imagem, 'image', MAX_IMAGE_BYTES);
+      if (dados.video) video = salvarMidiaBase64(dados.video, 'video', MAX_VIDEO_BYTES);
+    } catch (err) {
+      socket.emit('erroAcao', { error: err.message || 'Mídia inválida.' });
+      return;
+    }
+
+    if (!texto.trim() && !imagem && !video) {
+      socket.emit('erroAcao', { error: 'Post vazio.' });
+      return;
+    }
 
     const post = {
-      id: 'p_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+      id: gerarId('p'),
       authorId: autor.id,
       authorName: autor.name,
       authorHandle: autor.handle,
       authorAvatar: autor.avatar,
-      texto: (dados.texto || '').slice(0, 280), // garante limite de 280 chars no backend também
-      imagem: dados.imagem || null,
-      video: dados.video || null,
+      texto,
+      imagem,
+      video,
       createdAt: Date.now(),
-      likes: [],       // array de ids de usuários que curtiram
-      repostBy: null,  // se for um repost, guarda quem repostou
-      originalId: null // referência ao post original (quando repost)
+      likes: [],
+      comentarios: [],
+      repostBy: null,
+      originalId: null
     };
 
-    postsDb.get('posts').push(post).write(); // salva no lowdb
-    io.emit('postCriado', post); // envia para TODOS os clientes (broadcast em tempo real)
+    postsDb.get('posts').push(post).write();
+    io.emit('postCriado', post);
   });
 
-  // --- Evento: curtir/descurtir um post ---
-  socket.on('curtir', ({ postId, userId }) => {
+  socket.on('curtir', ({ postId } = {}) => {
+    const userId = socket.userId;
     const post = postsDb.get('posts').find({ id: postId }).value();
     if (!post) return;
 
+    if (!Array.isArray(post.likes)) post.likes = [];
     const jaCurtiu = post.likes.includes(userId);
-    if (jaCurtiu) {
-      // remove o like (toggle)
-      post.likes = post.likes.filter((id) => id !== userId);
-    } else {
-      post.likes.push(userId);
-    }
+    post.likes = jaCurtiu
+      ? post.likes.filter((id) => id !== userId)
+      : [...post.likes, userId];
 
     postsDb.get('posts').find({ id: postId }).assign(post).write();
-
-    // envia atualização do post para todos
     io.emit('postAtualizado', post);
 
-    // se foi um like novo (não remoção) e o autor não é quem curtiu, notifica o autor
     if (!jaCurtiu && post.authorId !== userId) {
-      const quemCurtiu = usersDb.get('users').find({ id: userId }).value();
-      io.emit('notificacao', {
-        paraUserId: post.authorId,
-        mensagem: `${quemCurtiu ? quemCurtiu.name : 'Alguém'} curtiu seu post`
-      });
+      const quem = obterUsuarioPorId(userId);
+      const notif = criarNotificacao(
+        post.authorId,
+        `${quem ? quem.name : 'Alguém'} curtiu seu post`,
+        'like',
+        userId
+      );
+      if (notif) io.to(`user:${post.authorId}`).emit('notificacao', notif);
     }
   });
 
-  // --- Evento: repostar um post existente ---
-  socket.on('repostar', ({ postId, userId }) => {
+  socket.on('repostar', ({ postId } = {}) => {
+    const userId = socket.userId;
     const original = postsDb.get('posts').find({ id: postId }).value();
-    const usuario = usersDb.get('users').find({ id: userId }).value();
+    const usuario = obterUsuarioPorId(userId);
     if (!original || !usuario) return;
 
-    // evita repost duplicado da mesma pessoa
-    const jaRepostou = postsDb.get('posts')
-      .find({ originalId: original.originalId || original.id, repostBy: usuario.id })
-      .value();
-    if (jaRepostou) return;
+    const originalRef = original.originalId || original.id;
+
+    const jaRepostou = postsDb.get('posts').find((p) =>
+      p.originalId === originalRef && p.repostBy && p.repostBy.id === usuario.id
+    ).value();
+
+    if (jaRepostou) {
+      socket.emit('erroAcao', { error: 'Você já repostou isso.' });
+      return;
+    }
 
     const repost = {
-      id: 'p_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+      id: gerarId('p'),
       authorId: original.authorId,
       authorName: original.authorName,
       authorHandle: original.authorHandle,
@@ -364,62 +747,107 @@ io.on('connection', (socket) => {
       video: original.video,
       createdAt: Date.now(),
       likes: [],
+      comentarios: [],
       repostBy: { id: usuario.id, name: usuario.name, handle: usuario.handle },
-      originalId: original.originalId || original.id
+      originalId: originalRef
     };
 
     postsDb.get('posts').push(repost).write();
-    io.emit('postCriado', repost); // aparece no feed de todos como novo post
+    io.emit('postCriado', repost);
 
     if (original.authorId !== usuario.id) {
-      io.emit('notificacao', {
-        paraUserId: original.authorId,
-        mensagem: `${usuario.name} repostou seu post`
-      });
+      const notif = criarNotificacao(
+        original.authorId,
+        `${usuario.name} repostou seu post`,
+        'repost',
+        usuario.id
+      );
+      if (notif) io.to(`user:${original.authorId}`).emit('notificacao', notif);
     }
   });
 
-  // --- Evento: deletar post (apenas o autor pode) ---
-  socket.on('deletarPost', ({ postId, userId }) => {
+  socket.on('deletarPost', ({ postId } = {}) => {
+    const userId = socket.userId;
     const post = postsDb.get('posts').find({ id: postId }).value();
     if (!post) return;
-    if (post.authorId !== userId) return; // segurança: só o autor deleta
 
-    postsDb.get('posts').remove({ id: postId }).write();
-    io.emit('postDeletado', { postId }); // remove em tempo real de todos os clientes
+    const ehAutor = post.authorId === userId;
+    const ehRepostProprio = post.repostBy && post.repostBy.id === userId;
+    const ehAdmin = socket.usuario.role === 'admin';
+
+    if (!ehAutor && !ehRepostProprio && !ehAdmin) {
+      socket.emit('erroAcao', { error: 'Sem permissão para deletar.' });
+      return;
+    }
+
+    const idsRemovidos = [postId];
+
+    // Se for post original (não repost), remove também os reposts derivados
+    if (!post.repostBy) {
+      const reposts = postsDb.get('posts')
+        .filter((p) => p.originalId === post.id)
+        .value();
+      reposts.forEach((r) => idsRemovidos.push(r.id));
+      postsDb.get('posts').remove((p) => p.id === post.id || p.originalId === post.id).write();
+    } else {
+      postsDb.get('posts').remove({ id: postId }).write();
+    }
+
+    idsRemovidos.forEach((id) => io.emit('postDeletado', { postId: id }));
   });
 
-  // --- Evento: comentário simples (contador apenas, sem thread completa) ---
-  socket.on('comentar', ({ postId, userId, texto }) => {
+  socket.on('comentar', ({ postId, texto } = {}) => {
+    const userId = socket.userId;
     const post = postsDb.get('posts').find({ id: postId }).value();
     if (!post) return;
 
-    if (textoTemPalavraOfensiva(texto)) return;
+    if (textoTemPalavraOfensiva(texto)) {
+      socket.emit('erroAcao', { error: 'Comentário bloqueado por conteúdo ofensivo.' });
+      return;
+    }
 
+    const usuario = obterUsuarioPorId(userId);
     if (!post.comentarios) post.comentarios = [];
-    const usuario = usersDb.get('users').find({ id: userId }).value();
 
     const comentario = {
+      id: gerarId('c'),
+      autorId: userId,
       autor: usuario ? usuario.name : 'Anônimo',
       handle: usuario ? usuario.handle : '',
-      texto: (texto || '').slice(0, 280),
+      texto: String(texto || '').slice(0, 280),
       createdAt: Date.now()
     };
-    post.comentarios.push(comentario);
 
+    if (!comentario.texto.trim()) return;
+
+    post.comentarios.push(comentario);
     postsDb.get('posts').find({ id: postId }).assign(post).write();
     io.emit('postAtualizado', post);
+
+    if (post.authorId !== userId) {
+      const notif = criarNotificacao(
+        post.authorId,
+        `${usuario ? usuario.name : 'Alguém'} comentou no seu post`,
+        'comentario',
+        userId
+      );
+      if (notif) io.to(`user:${post.authorId}`).emit('notificacao', notif);
+    }
   });
 
-  // --- Evento: enviar mensagem privada em tempo real ---
-  socket.on('enviarMensagem', ({ fromId, toId, texto }) => {
-    const remetente = usersDb.get('users').find({ id: fromId }).value();
-    const destinatario = usersDb.get('users').find({ id: toId }).value();
-    if (!remetente || !destinatario || !texto || String(texto).trim().length === 0) return;
-    if (textoTemPalavraOfensiva(texto)) return;
+  socket.on('enviarMensagem', ({ toId, texto } = {}) => {
+    const fromId = socket.userId;
+    const remetente = obterUsuarioPorId(fromId);
+    const destinatario = obterUsuarioPorId(toId);
+    if (!remetente || !destinatario || !texto || !String(texto).trim()) return;
+
+    if (textoTemPalavraOfensiva(texto)) {
+      socket.emit('erroAcao', { error: 'Mensagem bloqueada por conteúdo ofensivo.' });
+      return;
+    }
 
     const mensagem = {
-      id: 'm_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+      id: gerarId('m'),
       fromId,
       toId,
       texto: String(texto).trim().slice(0, 280),
@@ -428,31 +856,48 @@ io.on('connection', (socket) => {
 
     messagesDb.get('messages').push(mensagem).write();
     io.emit('mensagemCriada', mensagem);
+
+    const notif = criarNotificacao(
+      toId,
+      `${remetente.name} enviou uma mensagem`,
+      'mensagem',
+      fromId
+    );
+    if (notif) io.to(`user:${toId}`).emit('notificacao', notif);
   });
 
-  // --- Evento: seguir/deixar de seguir outro usuário (toggle) ---
-  socket.on('seguir', ({ userId, alvoId }) => {
-    if (userId === alvoId) return; // não pode seguir a si mesmo
-    const usuario = usersDb.get('users').find({ id: userId }).value();
-    if (!usuario) return;
+  socket.on('seguir', ({ alvoId } = {}) => {
+    const userId = socket.userId;
+    if (!alvoId || userId === alvoId) return;
 
-    if (!usuario.following) usuario.following = [];
+    const usuario = obterUsuarioPorId(userId);
+    const alvo = obterUsuarioPorId(alvoId);
+    if (!usuario || !alvo) return;
+
+    if (!Array.isArray(usuario.following)) usuario.following = [];
     const jaSegue = usuario.following.includes(alvoId);
 
     usuario.following = jaSegue
       ? usuario.following.filter((id) => id !== alvoId)
       : [...usuario.following, alvoId];
 
-    usersDb.get('users').find({ id: userId }).assign(usuario).write();
+    usersDb.get('users').find({ id: userId }).assign({ following: usuario.following }).write();
 
-    // avisa todo mundo para atualizar contadores/botões de "Seguir" em tela
-    io.emit('seguidorAtualizado', { userId, alvoId, seguindo: !jaSegue });
+    io.emit('seguidorAtualizado', {
+      userId,
+      alvoId,
+      seguindo: !jaSegue,
+      following: usuario.following
+    });
 
     if (!jaSegue) {
-      io.emit('notificacao', {
-        paraUserId: alvoId,
-        mensagem: `${usuario.name} começou a seguir você`
-      });
+      const notif = criarNotificacao(
+        alvoId,
+        `${usuario.name} começou a seguir você`,
+        'seguir',
+        userId
+      );
+      if (notif) io.to(`user:${alvoId}`).emit('notificacao', notif);
     }
   });
 
@@ -461,11 +906,13 @@ io.on('connection', (socket) => {
   });
 });
 
-// ===================== INICIALIZAÇÃO DO SERVIDOR ======================
+// -------------------- Start --------------------
 server.listen(PORT, HOST, () => {
-  const protocolo = IS_PRODUCTION ? 'http' : 'https';
+  const protocolo = (!IS_PRODUCTION && fs.existsSync(path.join(__dirname, 'cert', 'tadashi-cert.pem')))
+    ? 'https'
+    : 'http';
   console.log(`🚀 Tadashi rodando em ${protocolo}://${HOST}:${PORT}`);
   if (!IS_PRODUCTION) {
-    console.log(`🌍 Rede Wi-Fi: https://192.168.237.79:${PORT}`);
+    console.log(`🌍 Rede local: ${protocolo}://${ipLocalLan()}:${PORT}`);
   }
 });
