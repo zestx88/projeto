@@ -319,8 +319,83 @@ img { max-width: 100%; display: block; }
 }
 
 /* ============================================================
-   MÍDIA NAS MENSAGENS + MENÇÃO + CHAMADA DE VOZ
+   FEED DE VÍDEOS ESTILO TIKTOK
    ============================================================ */
+.pagina-videos { padding: 0; }
+.lista-videos {
+  height: calc(100vh - 66px);
+  overflow-y: scroll;
+  scroll-snap-type: y mandatory;
+  scrollbar-width: none;
+  background: #000;
+}
+.lista-videos::-webkit-scrollbar { display: none; }
+
+.tiktok-video {
+  position: relative;
+  height: calc(100vh - 66px);
+  scroll-snap-align: start;
+  background: #000;
+  overflow: hidden;
+}
+.tiktok-player {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+}
+.tiktok-escurecer {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(0,0,0,0.6), transparent 40%);
+  pointer-events: none;
+}
+.tiktok-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: 18px;
+  color: #fff;
+  gap: 12px;
+}
+.tiktok-info {
+  max-width: 70%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 30px;
+}
+.tiktok-usuario { font-weight: 800; font-size: 16px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+.tiktok-legenda { font-size: 14px; line-height: 1.4; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+.tiktok-legenda .mencao-link { color: #7fb3ff; }
+.tiktok-lateral {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  align-items: center;
+  padding-bottom: 20px;
+}
+.tiktok-btn {
+  background: rgba(0,0,0,0.35);
+  border: none;
+  color: #fff;
+  border-radius: 50%;
+  width: 52px;
+  height: 52px;
+  font-size: 22px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 2px;
+}
+.tiktok-btn:hover { background: rgba(0,0,0,0.6); }
+.tiktok-qtd { font-size: 11px; font-weight: 700; }
 .conversa-header .conversa-info { flex: 1; }
 .conversa-header .btn-icone { margin-left: auto; }
 

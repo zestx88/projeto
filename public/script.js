@@ -129,6 +129,11 @@ const btnFecharMencao = document.getElementById('btn-fechar-mencao');
 const inputMencaoBusca = document.getElementById('input-mencao-busca');
 const listaMencao = document.getElementById('lista-mencao');
 
+// ===== Enviar vídeo para amigo =====
+const modalEnviarVideo = document.getElementById('modal-enviar-video');
+const btnFecharEnviarVideo = document.getElementById('btn-fechar-enviar-video');
+const listaEnviarVideo = document.getElementById('lista-enviar-video');
+
 // ===== Chamada de voz =====
 const callOverlay = document.getElementById('call-overlay');
 const callAvatar = document.getElementById('call-avatar');
@@ -257,29 +262,12 @@ async function carregarUsuarios() {
   `).join('');
 
   listaUsuariosEl.querySelectorAll('.usuario-card').forEach((card) => {
-    card.addEventListener('click', async () => {
+    card.addEventListener('click', () => {
       const usuario = todosUsuarios.find((u) => u.id === card.dataset.id);
       if (!usuario) return;
+      inputLoginHandle.value = usuario.handle;
+      inputLoginSenha.focus();
       limparErroLogin();
-
-      // Login rápido (demo): entra direto ao escolher o perfil
-      try {
-        const { resp, data } = await api('/api/quick-login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ handle: usuario.handle })
-        });
-        if (!resp.ok) {
-          mostrarErroLogin(data?.error || 'Não foi possível entrar automaticamente.');
-          return;
-        }
-        await carregarUsuarios();
-        await entrarComoUsuario(data.user, data.token);
-        formLogin.reset();
-        limparErroLogin();
-      } catch (err) {
-        mostrarErroLogin(err.message || 'Erro de conexão.');
-      }
     });
   });
 }
@@ -1137,6 +1125,16 @@ function configurarEventos() {
   });
   inputMencaoBusca.addEventListener('input', renderizarListaMencao);
 
+  // ---- Enviar vídeo para amigo ----
+  btnFecharEnviarVideo.addEventListener('click', fecharModalEnviarVideo);
+  modalEnviarVideo.addEventListener('click', (e) => {
+    if (e.target === modalEnviarVideo) fecharModalEnviarVideo();
+  });
+  listaEnviarVideo.addEventListener('click', (e) => {
+    const botao = e.target.closest('[data-enviar-id]');
+    if (botao) enviarVideoParaAmigo(botao.dataset.enviarId);
+  });
+
   // ---- Chamada de voz ----
   callBtnMute.addEventListener('click', alternarMudoChamada);
   callBtnEnd.addEventListener('click', encerrarChamada);
@@ -1557,11 +1555,162 @@ async function abrirPerfil(userId) {
 // ============================================================
 function renderizarVideos() {
   if (!usuarioAtual) return;
-  const videos = posts.filter((p) => Boolean(p.video));
-  listaVideosEl.innerHTML = videos.length
-    ? videos.map((p) => templatePost(p)).join('')
-    : '<div class="notificacao-vazia">Ainda não há vídeos publicados.</div>';
-  ligarEventosDosPostsEm(listaVideosEl);
+  const videos = posts.filter((p) => Boolean(p.video) && !(p.repostBy && p.originalId));
+
+  if (!videos.length) {
+    listaVideosEl.innerHTML = '<div class="notificacao-vazia">Ainda não há vídeos publicados.</div>';
+    return;
+  }
+
+  listaVideosEl.innerHTML = videos.map((p) => `
+    <div class="tiktok-video" data-post-id="${escaparAttr(p.id)}">
+      <video class="tiktok-player" src="${escaparAttr(p.video)}" loop muted playsinline preload="metadata"></video>
+      <div class="tiktok-escurecer"></div>
+      <div class="tiktok-overlay">
+        <div class="tiktok-info">
+          <div class="tiktok-usuario">@${escaparHtml(String(p.authorHandle || '').replace(/^@/, ''))}</div>
+          <div class="tiktok-legenda">${formatarMencoes(escaparHtml(p.texto || ''))}</div>
+        </div>
+        <div class="tiktok-lateral">
+          <button type="button" class="tiktok-btn" data-acao="like" title="Curtir">❤️<span class="tiktok-qtd">${(p.likes || []).length}</span></button>
+          <button type="button" class="tiktok-btn" data-acao="mudo" title="Som">🔊</button>
+          <button type="button" class="tiktok-btn" data-acao="compartilhar" title="Compartilhar">🔗</button>
+          <button type="button" class="tiktok-btn" data-acao="enviar-amigo" title="Enviar para amigo">📤</button>
+        </div>
+      </div>
+    </div>
+  `).join('');
+
+  ligarAcoesTikTok(listaVideosEl);
+  configurarTikTokFeed(listaVideosEl);
+}
+
+function ligarAcoesTikTok(container) {
+  if (!socket || !usuarioAtual) return;
+
+  container.querySelectorAll('.tiktok-video').forEach((item) => {
+    const postId = item.dataset.postId;
+    const post = posts.find((p) => p.id === postId);
+    const player = item.querySelector('video');
+    const btnMudo = item.querySelector('[data-acao="mudo"]');
+    const btnLike = item.querySelector('[data-acao="like"]');
+
+    btnMudo?.addEventListener('click', () => {
+      if (!player) return;
+      player.muted = !player.muted;
+      btnMudo.textContent = player.muted ? '🔇' : '🔊';
+      if (!player.muted) player.play().catch(() => {});
+      else player.pause();
+    });
+
+    btnLike?.addEventListener('click', () => {
+      socket.emit('curtir', { postId });
+    });
+
+    item.querySelector('[data-acao="compartilhar"]')?.addEventListener('click', () => {
+      compartilharVideoExterno(post);
+    });
+
+    item.querySelector('[data-acao="enviar-amigo"]')?.addEventListener('click', () => {
+      abrirModalEnviarVideo(post);
+    });
+  });
+}
+
+function configurarTikTokFeed(container) {
+  const items = container.querySelectorAll('.tiktok-video');
+  if (!items.length) return;
+  const players = Array.from(items).map((v) => v.querySelector('video'));
+
+  function tocarVisivel() {
+    const centro = window.innerHeight / 2;
+    let alvo = items[0], melhor = Infinity;
+    items.forEach((v) => {
+      const r = v.getBoundingClientRect();
+      const dist = Math.abs(r.top + r.height / 2 - centro);
+      if (dist < melhor) { melhor = dist; alvo = v; }
+    });
+    players.forEach((vid, i) => {
+      if (items[i] === alvo) {
+        // mantém o estado de som/mudo atual do vídeo
+        vid.play().catch(() => {});
+      } else {
+        vid.pause();
+      }
+    });
+  }
+
+  const rolagem = container.closest('.pagina') || window;
+  (rolagem === window ? window : container).addEventListener('scroll', tocarVisivel);
+  window.addEventListener('touchmove', tocarVisivel);
+  requestAnimationFrame(() => {
+    players.forEach((vid) => vid.play().catch(() => {}));
+  });
+}
+
+// Compartilha o vídeo FORA da rede (Web Share / copiar link)
+async function compartilharVideoExterno(post) {
+  const url = `${location.origin}${post.video}`;
+  const titulo = `Vídeo no Tadashi por ${post.authorName || 'alguém'}`;
+  try {
+    if (navigator.share) {
+      await navigator.share({ title: titulo, text: post.texto || '', url });
+      return;
+    }
+  } catch (e) { /* usuário cancelou ou sem suporte */ }
+  try {
+    await navigator.clipboard.writeText(url);
+    mostrarToast('🔗 Link do vídeo copiado!');
+  } catch (e) {
+    prompt('Copie o link do vídeo:', url);
+  }
+}
+
+// Envia o vídeo para um amigo DENTRO da rede (vira mensagem no chat)
+let videoParaEnviar = null;
+function abrirModalEnviarVideo(post) {
+  if (!usuarioAtual) return;
+  videoParaEnviar = post;
+  const amigos = todosUsuarios.filter((u) => u.id !== usuarioAtual.id);
+  listaEnviarVideo.innerHTML = amigos.length
+    ? amigos.map((u) => `
+      <button type="button" class="mencao-item" data-enviar-id="${u.id}">
+        <img class="avatar avatar-sm" src="${escaparAttr(u.avatar)}" alt="">
+        <div>
+          <div class="mencao-nome">${escaparHtml(u.name)}</div>
+          <div class="mencao-handle">${escaparHtml(u.handle)}</div>
+        </div>
+      </button>`).join('')
+    : '<div class="notificacao-vazia">Nenhum amigo para enviar.</div>';
+  modalEnviarVideo.classList.remove('hidden');
+}
+
+function fecharModalEnviarVideo() {
+  modalEnviarVideo.classList.add('hidden');
+  videoParaEnviar = null;
+}
+
+async function enviarVideoParaAmigo(amigoId) {
+  if (!videoParaEnviar) return;
+  try {
+    const { resp, data } = await api('/api/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toId: amigoId, video: videoParaEnviar.video, texto: '' })
+    });
+    fecharModalEnviarVideo();
+    if (!resp.ok) {
+      mostrarToast(data?.error || 'Não foi possível enviar o vídeo.');
+      return;
+    }
+    mostrarToast('📤 Vídeo enviado para o amigo!');
+    if (data?.id && !mensagens.some((m) => m.id === data.id)) {
+      mensagens.push(data);
+      renderizarConversa();
+    }
+  } catch (err) {
+    mostrarToast(err.message || 'Erro ao enviar vídeo.');
+  }
 }
 
 // ============================================================
