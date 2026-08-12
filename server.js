@@ -911,6 +911,32 @@ app.post('/api/admin/users/:id/unban', middlewareAuth, middlewareAdmin, (req, re
   res.json({ ok: true });
 });
 
+// Excluir conta permanentemente (admin)
+app.post('/api/admin/users/:id/delete', middlewareAuth, middlewareAdmin, (req, res) => {
+  const alvoId = req.params.id;
+  const usuario = obterUsuarioPorId(alvoId);
+  if (!usuario) return res.status(404).json({ error: 'Usuário não encontrado.' });
+  if (usuario.role === 'admin') return res.status(400).json({ error: 'Não é possível excluir outro admin.' });
+
+  // Remove posts do usuário e seus reposts (liberando a mídia do disco)
+  const postsDoUser = postsDb.get('posts').value().filter((p) => p.authorId === alvoId);
+  postsDoUser.forEach(removerMidiaPost);
+  postsDb.get('posts').remove((p) => p.authorId === alvoId || (p.repostBy && p.repostBy.id === alvoId)).write();
+
+  // Mensagens, notificações, sessões e reports relacionados
+  messagesDb.get('messages').remove((m) => m.fromId === alvoId || m.toId === alvoId).write();
+  notificationsDb.get('notifications').remove((n) => n.paraUserId === alvoId || n.deUserId === alvoId).write();
+  sessionsDb.get('sessions').remove({ userId: alvoId }).write();
+  reportsDb.get('reports').remove((r) => r.targetUserId === alvoId || r.deUserId === alvoId).write();
+
+  usersDb.get('users').remove({ id: alvoId }).write();
+
+  io.to(`user:${alvoId}`).emit('contaExcluida', { motivo: 'Sua conta foi excluída por um administrador.' });
+  notificarAdmins(`${usuario.name} (@${usuario.handle}) teve a conta excluída por ${req.usuario.name}.`, 'banimento', alvoId);
+
+  res.json({ ok: true });
+});
+
 // Reportar post (usuário comum) – cria report para análise do admin
 app.post('/api/posts/:id/reportar', middlewareAuth, (req, res) => {
   const post = postsDb.get('posts').find({ id: req.params.id }).value();

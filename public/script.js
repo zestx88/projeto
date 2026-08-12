@@ -738,6 +738,16 @@ function configurarSocket() {
     }
   });
 
+  // Conta excluída por um administrador
+  socket.on('contaExcluida', ({ motivo }) => {
+    if (usuarioAtual) {
+      alert(motivo || 'Sua conta foi excluída.');
+      limparSessaoLocal();
+      mostrarTelaLogin();
+      mostrarToast('Sua conta foi excluída.');
+    }
+  });
+
   // Novo reporte criado (admin recebe em tempo real)
   socket.on('reporteCriado', () => {
     if (paginaAtual === 'admin') carregarReportsAdmin();
@@ -1382,6 +1392,7 @@ function templateAdminUser(u) {
         ? `<button class="btn btn-unban-user" data-userid="${escaparAttr(u.id)}">Desbanir</button>`
         : `<button class="btn btn-ban-user" data-userid="${escaparAttr(u.id)}">Banir</button>`
       ) : '<span>👑 Admin</span>'}
+      ${u.role !== 'admin' ? `<button class="btn btn-del-user btn-danger" data-userdel="${escaparAttr(u.id)}">🗑️ Excluir</button>` : ''}
     </div>
   `;
 }
@@ -1455,6 +1466,21 @@ async function carregarUsuariosAdmin() {
       const alvoId = btn.dataset.userid;
       const { resp } = await api(`/api/admin/users/${alvoId}/unban`, { method: 'POST' });
       if (resp.ok) { mostrarToast('Usuário desbanido.'); carregarUsuariosAdmin(); }
+    });
+  });
+  listaAdminUsers.querySelectorAll('.btn-del-user').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const alvoId = btn.dataset.userdel;
+      const alvo = todosUsuarios.find((u) => u.id === alvoId);
+      if (!confirm(`⚠️ Excluir PERMANENTEMENTE a conta ${alvo ? `@${alvo.handle}` : ''}? Todos os posts, mensagens e dados serão apagados.`)) return;
+      const { resp } = await api(`/api/admin/users/${alvoId}/delete`, { method: 'POST' });
+      if (resp.ok) {
+        mostrarToast('🚫 Conta excluída.');
+        todosUsuarios = todosUsuarios.filter((u) => u.id !== alvoId);
+        renderizarContatos();
+        renderizarSugestoes();
+        carregarUsuariosAdmin();
+      }
     });
   });
 }
