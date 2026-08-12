@@ -13,6 +13,7 @@ const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
 const { Server } = require('socket.io');
+const { seed } = require('./seed');
 
 const low = require('lowdb');
 const FileSync = require('lowdb/adapters/FileSync');
@@ -1412,6 +1413,9 @@ io.on('connection', (socket) => {
 });
 
 // -------------------- Start --------------------
+// Garante que os usuários demo sempre existam antes de servir
+seed({ usersDb, postsDb, messagesDb, notificationsDb, sessionsDb, reportsDb });
+
 server.listen(PORT, HOST, () => {
   const protocolo = (!IS_PRODUCTION && fs.existsSync(path.join(__dirname, 'cert', 'tadashi-cert.pem')))
     ? 'https'
