@@ -31,12 +31,14 @@ const postsDb = low(new FileSync(path.join(dataDir, 'posts.json')));
 const messagesDb = low(new FileSync(path.join(dataDir, 'messages.json')));
 const notificationsDb = low(new FileSync(path.join(dataDir, 'notifications.json')));
 const sessionsDb = low(new FileSync(path.join(dataDir, 'sessions.json')));
+const reportsDb = low(new FileSync(path.join(dataDir, 'reports.json')));
 
 usersDb.defaults({ users: [] }).write();
 postsDb.defaults({ posts: [] }).write();
 messagesDb.defaults({ messages: [] }).write();
 notificationsDb.defaults({ notifications: [] }).write();
 sessionsDb.defaults({ sessions: [] }).write();
+reportsDb.defaults({ reports: [] }).write();
 
 // -------------------- Constantes --------------------
 const PBKDF2_ITERATIONS = 100000;
@@ -47,6 +49,7 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB
 const MAX_VIDEO_BYTES = 40 * 1024 * 1024; // 40 MB
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024; // 2 MB
 const MAX_NOTIFICACOES_POR_USER = 100;
+const MAX_STRIKES = 3; // strikes automáticos antes do banimento
 
 const AUTH_SECRET = process.env.AUTH_SECRET || 'tadashi-dev-secret-change-me';
 
@@ -107,6 +110,23 @@ function obterUsuarioPorHandle(handle) {
   return usersDb.get('users').find((u) => String(u.handle).toLowerCase() === h).value() || null;
 }
 
+/**
+ * Extrai os ids de usuários mencionados via @handle no texto.
+ * Retorna um array de ids (sem o próprio autor, filtrado pelo chamador se preciso).
+ */
+function extrairUsuariosMencionados(texto, ignorarId) {
+  const ids = new Set();
+  const regex = /@([a-zA-Z0-9_]{2,30})/g;
+  let match;
+  let str = String(texto || '');
+  while ((match = regex.exec(str)) !== null) {
+    const h = `@${match[1].toLowerCase()}`;
+    const u = obterUsuarioPorHandle(h);
+    if (u && u.id !== ignorarId) ids.add(u.id);
+  }
+  return Array.from(ids);
+}
+
 function limparSessoesExpiradas() {
   const agora = Date.now();
   sessionsDb.get('sessions').remove((s) => s.expiresAt <= agora).write();
@@ -144,6 +164,11 @@ function validarToken(token) {
   if (!sessao || sessao.expiresAt <= Date.now()) return null;
   const usuario = obterUsuarioPorId(sessao.userId);
   if (!usuario) return null;
+  // Usuário banido: invalida sessão e revoga todas as sessões ativas
+  if (usuario.banned) {
+    revogarSessoesDoUsuario(sessao.userId);
+    return null;
+  }
   return { usuario, sessao, token };
 }
 
@@ -179,6 +204,93 @@ function middlewareAuthOpcional(req, res, next) {
   next();
 }
 
+// -------------------- Admin / Moderação --------------------
+function middlewareAdmin(req, res, next) {
+  if (!req.usuario || req.usuario.role !== 'admin') {
+    return res.status(403).json({ error: 'Acesso restrito a administradores.' });
+  }
+  next();
+}
+
+function notificarAdmins(mensagem, tipo, deUserId) {
+  const adminIds = usersDb.get('users').filter({ role: 'admin' }).map('id').value();
+  for (const adminId of adminIds) {
+    const notif = criarNotificacao(adminId, mensagem, tipo || 'geral', deUserId);
+    if (notif) io.to(`user:${adminId}`).emit('notificacao', notif);
+  }
+}
+
+/**
+ * Registra um strike automático contra um usuário por conteúdo ofensivo.
+ * Cria um report, incrementa strikes, e auto-banifica ao atingir MAX_STRIKES.
+ * Retorna o número de strikes ou null.
+ */
+function registrarStrike(userId, motivo) {
+  const usuario = obterUsuarioPorId(userId);
+  if (!usuario) return null;
+
+  // Cria report no banco
+  const report = {
+    id: gerarId('r'),
+    tipo: 'ofensivo',
+    motivo,
+    deUserId: 'sistema',
+    targetUserId: userId,
+    postagemId: null,
+    resolvido: false,
+    createdAt: Date.now()
+  };
+  reportsDb.get('reports').unshift(report).write();
+
+  // Incrementa strikes
+  const strikes = (usuario.strikes || 0) + 1;
+  usersDb.get('users').find({ id: userId }).assign({ strikes }).write();
+
+  // Notifica admins
+  notificarAdmins(
+    `${usuario.name} (@${usuario.handle}) recebeu strike (${strikes}/${MAX_STRIKES}): ${motivo}`,
+    'strike',
+    userId
+  );
+
+  // Auto-ban ao atingir o limite
+  if (strikes >= MAX_STRIKES) {
+    usersDb.get('users').find({ id: userId }).assign({
+      banned: true,
+      banReason: motivo,
+      bannedAt: Date.now(),
+      bannedBy: 'sistema'
+    }).write();
+    revogarSessoesDoUsuario(userId);
+    io.to(`user:${userId}`).emit('usuarioBanido', { motivo, strikes });
+    notificarAdmins(
+      `${usuario.name} (@${usuario.handle}) foi BANIDO automaticamente após ${strikes} strikes.`,
+      'banimento',
+      userId
+    );
+  }
+
+  return strikes;
+}
+
+/**
+ * Remove arquivos de mídia (imagem/video) do disco quando um post é deletado.
+ */
+function removerMidiaPost(post) {
+  if (!post) return;
+  for (const campo of ['imagem', 'video']) {
+    const url = post[campo];
+    if (typeof url === 'string' && url.startsWith('/uploads/')) {
+      const filePath = path.join(__dirname, 'public', url);
+      try {
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      } catch (e) {
+        // ignora erro de remoção
+      }
+    }
+  }
+}
+
 function extensaoDeMime(mime) {
   const mapa = {
     'image/jpeg': '.jpg',
@@ -189,7 +301,15 @@ function extensaoDeMime(mime) {
     'video/mp4': '.mp4',
     'video/webm': '.webm',
     'video/ogg': '.ogv',
-    'video/quicktime': '.mov'
+    'video/quicktime': '.mov',
+    'audio/mpeg': '.mp3',
+    'audio/mp3': '.mp3',
+    'audio/ogg': '.ogg',
+    'audio/wav': '.wav',
+    'audio/x-wav': '.wav',
+    'audio/x-m4a': '.m4a',
+    'audio/mp4': '.m4a',
+    'audio/webm': '.webm'
   };
   return mapa[mime] || null;
 }
@@ -226,6 +346,9 @@ function salvarMidiaBase64(dataUrl, tipoEsperado, limiteBytes) {
   }
   if (tipoEsperado === 'video' && !mime.startsWith('video/')) {
     throw new Error('Arquivo de vídeo inválido.');
+  }
+  if (tipoEsperado === 'audio' && !mime.startsWith('audio/')) {
+    throw new Error('Arquivo de áudio inválido.');
   }
 
   const ext = extensaoDeMime(mime);
@@ -375,9 +498,39 @@ app.post('/api/login', rateLimit(5, 60000), (req, res) => {
     return res.status(400).json({ error: 'Informe handle e senha.' });
   }
 
-  const usuario = obterUsuarioPorHandle(handleRecebido);
+    const usuario = obterUsuarioPorHandle(handleRecebido);
   if (!usuario || !usuario.passwordHash || !verificarPassword(senhaRecebida, usuario.passwordHash)) {
     return res.status(401).json({ error: 'Credenciais inválidas.' });
+  }
+  // Bloqueia login de usuários banidos
+  if (usuario.banned) {
+    return res.status(403).json({
+      error: `Conta banida: ${usuario.banReason || 'contato com administrador'}.`,
+      banned: true,
+      banReason: usuario.banReason || '',
+      bannedAt: usuario.bannedAt || 0
+    });
+  }
+
+  const token = criarSessao(usuario.id);
+  res.json({ token, user: usuarioPublico(usuario) });
+});
+
+// Login rápido (demo): entra sem senha pelo handle/email — usado pelos cards
+// de perfil pré-cadastrados na tela de login. Remove em produção se desejado.
+app.post('/api/quick-login', rateLimit(10, 60000), (req, res) => {
+  const { handle } = req.body || {};
+  const handleRecebido = String(handle || '').trim().toLowerCase();
+  if (!handleRecebido) {
+    return res.status(400).json({ error: 'Informe o handle.' });
+  }
+
+  const usuario = obterUsuarioPorHandle(handleRecebido);
+  if (!usuario) {
+    return res.status(404).json({ error: 'Usuário não encontrado.' });
+  }
+  if (usuario.banned) {
+    return res.status(403).json({ error: `Conta banida: ${usuario.banReason || 'contato com administrador'}.` });
   }
 
   const token = criarSessao(usuario.id);
@@ -428,6 +581,11 @@ app.post('/api/users', rateLimit(5, 60000), (req, res) => {
     bio: bioTexto || 'Novo membro do Tadashi.',
     following: [],
     role: 'user',
+    strikes: 0,
+    banned: false,
+    banReason: '',
+    bannedAt: 0,
+    bannedBy: '',
     passwordHash: criarPasswordHash(senhaTexto),
     createdAt: Date.now()
   };
@@ -559,22 +717,44 @@ app.get('/api/messages/:userId', middlewareAuth, (req, res) => {
 
 // Enviar mensagem (REST)
 app.post('/api/messages', middlewareAuth, (req, res) => {
-  const { toId, texto } = req.body || {};
+  const { toId, texto, imagem, video, audio } = req.body || {};
   const fromId = req.usuario.id;
   const destinatario = obterUsuarioPorId(toId);
 
-  if (!destinatario || !texto || !String(texto).trim()) {
-    return res.status(400).json({ error: 'Mensagem inválida.' });
+  if (!destinatario) {
+    return res.status(400).json({ error: 'Destinatário inválido.' });
   }
   if (textoTemPalavraOfensiva(texto)) {
-    return res.status(400).json({ error: 'Mensagem bloqueada por conteúdo ofensivo.' });
+    const strikes = registrarStrike(fromId, 'Mensagem ofensiva');
+    const msg = strikes ? `Mensagem bloqueada. Strike ${strikes}/${MAX_STRIKES}.` : 'Mensagem bloqueada por conteúdo ofensivo.';
+    return res.status(400).json({ error: msg });
+  }
+
+  let imgUrl = null;
+  let vidUrl = null;
+  let audUrl = null;
+  try {
+    if (imagem) imgUrl = salvarMidiaBase64(String(imagem).trim(), 'image', MAX_IMAGE_BYTES);
+    if (video) vidUrl = salvarMidiaBase64(String(video).trim(), 'video', MAX_VIDEO_BYTES);
+    if (audio) audUrl = salvarMidiaBase64(String(audio).trim(), 'audio', MAX_IMAGE_BYTES);
+  } catch (err) {
+    return res.status(400).json({ error: err.message || 'Mídia inválida.' });
+  }
+
+  const textoLimpo = String(texto || '').trim().slice(0, 280);
+  if (!textoLimpo && !imgUrl && !vidUrl && !audUrl) {
+    return res.status(400).json({ error: 'Mensagem vazia.' });
   }
 
   const mensagem = {
     id: gerarId('m'),
     fromId,
     toId,
-    texto: String(texto).trim().slice(0, 280),
+    texto: textoLimpo,
+    imagem: imgUrl,
+    video: vidUrl,
+    audio: audUrl,
+    tipo: imgUrl ? 'imagem' : (vidUrl ? 'video' : (audUrl ? 'audio' : 'texto')),
     createdAt: Date.now()
   };
 
@@ -583,7 +763,7 @@ app.post('/api/messages', middlewareAuth, (req, res) => {
 
   const notif = criarNotificacao(
     toId,
-    `${req.usuario.name} enviou uma mensagem`,
+    `${req.usuario.name} enviou uma ${mensagem.tipo === 'texto' ? 'mensagem' : mensagem.tipo}`,
     'mensagem',
     fromId
   );
@@ -630,6 +810,133 @@ app.post('/api/notifications/read', middlewareAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// ===================== ROTAS ADMIN =====================
+// Listar todos os usuários (admin)
+app.get('/api/admin/users', middlewareAuth, middlewareAdmin, (req, res) => {
+  const usuarios = usersDb.get('users').map((u) => {
+    const clone = { ...u };
+    delete clone.passwordHash;
+    return clone;
+  }).value();
+  res.json(usuarios);
+});
+
+// Listar reports (admin)
+app.get('/api/admin/reports', middlewareAuth, middlewareAdmin, (req, res) => {
+  const qs = req.query || {};
+  let query = reportsDb.get('reports');
+  if (qs.resolvidos === 'false' || qs.resolvidos === undefined) {
+    query = query.filter({ resolvido: false });
+  } else if (qs.resolvidos === 'true') {
+    query = query.filter({ resolvido: true });
+  }
+  const reports = query.sortBy('createdAt').reverse().value();
+  res.json(reports);
+});
+
+// Responder a um report (admin)
+app.post('/api/admin/reports/:id/responder', middlewareAuth, middlewareAdmin, (req, res) => {
+  const { id } = req.params;
+  const { resolver = true, banir = false, motivoBan = 'Violação das regras' } = req.body || {};
+
+  const report = reportsDb.get('reports').find({ id }).value();
+  if (!report) return res.status(404).json({ error: 'Reporte não encontrado.' });
+
+  reportsDb.get('reports').find({ id }).assign({ resolvido: !!resolver }).write();
+
+  const usuario = obterUsuarioPorId(report.targetUserId);
+  if (banir && usuario && !usuario.banned) {
+    usersDb.get('users').find({ id: report.targetUserId }).assign({
+      banned: true,
+      banReason: motivoBan,
+      bannedAt: Date.now(),
+      bannedBy: req.usuario.id
+    }).write();
+    revogarSessoesDoUsuario(report.targetUserId);
+    io.to(`user:${report.targetUserId}`).emit('usuarioBanido', {
+      motivo: motivoBan,
+      strikes: usuario.strikes || 0
+    });
+  }
+
+  io.emit('reporteAtualizado', { id, resolvido: !!resolver });
+  res.json({ ok: true });
+});
+
+// Deletar qualquer post (admin) – limpa mídia do disco
+app.delete('/api/admin/posts/:id', middlewareAuth, middlewareAdmin, (req, res) => {
+  const post = postsDb.get('posts').find({ id: req.params.id }).value();
+  if (!post) return res.status(404).json({ error: 'Post não encontrado.' });
+  removerMidiaPost(post);
+  postsDb.get('posts').remove({ id: req.params.id }).write();
+  io.emit('postDeletado', { postId: req.params.id });
+  res.json({ ok: true });
+});
+
+// Banir usuário (admin)
+app.post('/api/admin/users/:id/ban', middlewareAuth, middlewareAdmin, (req, res) => {
+  const { motivo = 'Violação das regras' } = req.body || {};
+  const usuario = obterUsuarioPorId(req.params.id);
+  if (!usuario) return res.status(404).json({ error: 'Usuário não encontrado.' });
+  if (usuario.role === 'admin') return res.status(400).json({ error: 'Não é possível banir outro admin.' });
+
+  usersDb.get('users').find({ id: req.params.id }).assign({
+    banned: true,
+    banReason: motivo,
+    bannedAt: Date.now(),
+    bannedBy: req.usuario.id
+  }).write();
+  revogarSessoesDoUsuario(req.params.id);
+  io.to(`user:${req.params.id}`).emit('usuarioBanido', { motivo, strikes: usuario.strikes || 0 });
+  notificarAdmins(`${usuario.name} (@${usuario.handle}) foi banido por ${req.usuario.name}.`, 'banimento', req.params.id);
+
+  res.json({ ok: true });
+});
+
+// Desbanir usuário (admin)
+app.post('/api/admin/users/:id/unban', middlewareAuth, middlewareAdmin, (req, res) => {
+  const usuario = obterUsuarioPorId(req.params.id);
+  if (!usuario) return res.status(404).json({ error: 'Usuário não encontrado.' });
+
+  usersDb.get('users').find({ id: req.params.id }).assign({
+    banned: false,
+    banReason: '',
+    bannedAt: 0,
+    bannedBy: '',
+    strikes: 0
+  }).write();
+
+  notificarAdmins(`${usuario.name} (@${usuario.handle}) foi desbanido por ${req.usuario.name}.`, 'banimento', req.params.id);
+  res.json({ ok: true });
+});
+
+// Reportar post (usuário comum) – cria report para análise do admin
+app.post('/api/posts/:id/reportar', middlewareAuth, (req, res) => {
+  const post = postsDb.get('posts').find({ id: req.params.id }).value();
+  if (!post) return res.status(404).json({ error: 'Post não encontrado.' });
+
+  const report = {
+    id: gerarId('r'),
+    tipo: 'manual',
+    motivo: String((req.body || {}).motivo || 'Conteúdo ofensivo').slice(0, 280),
+    deUserId: req.usuario.id,
+    targetUserId: post.authorId,
+    postId: req.params.id,
+    resolvido: false,
+    createdAt: Date.now()
+  };
+  reportsDb.get('reports').unshift(report).write();
+
+  notificarAdmins(
+    `${req.usuario.name} reportou post de ${post.authorName || 'usuário'}: ${report.motivo}`,
+    'reporte',
+    req.usuario.id
+  );
+
+  io.to(`user:${post.authorId}`).emit('postReportado', { postId: req.params.id });
+  res.status(201).json({ ok: true, report });
+});
+
 // ===================== SOCKET.IO ======================
 io.use((socket, next) => {
   try {
@@ -654,7 +961,9 @@ io.on('connection', (socket) => {
 
     const texto = String(dados.texto || '').slice(0, 280);
     if (textoTemPalavraOfensiva(texto)) {
-      socket.emit('erroAcao', { error: 'Post bloqueado por conteúdo ofensivo.' });
+      const strikes = registrarStrike(autor.id, 'Post com conteúdo ofensivo');
+      const msg = strikes ? `Post bloqueado. Strike ${strikes}/${MAX_STRIKES}.` : 'Post bloqueado por conteúdo ofensivo.';
+      socket.emit('erroAcao', { error: msg });
       return;
     }
 
@@ -691,6 +1000,13 @@ io.on('connection', (socket) => {
 
     postsDb.get('posts').push(post).write();
     io.emit('postCriado', post);
+
+    // Notifica usuários mencionados via @handle
+    const mencionados = extrairUsuariosMencionados(texto, autor.id);
+    mencionados.forEach((uid) => {
+      const notif = criarNotificacao(uid, `${autor.name} mencionou você em um post`, 'menção', autor.id);
+      if (notif) io.to(`user:${uid}`).emit('notificacao', notif);
+    });
   });
 
   socket.on('curtir', ({ postId } = {}) => {
@@ -781,6 +1097,9 @@ io.on('connection', (socket) => {
     }
 
     const idsRemovidos = [postId];
+    
+    // Limpa arquivos de mídia do disco
+    removerMidiaPost(post);
 
     // Se for post original (não repost), remove também os reposts derivados
     if (!post.repostBy) {
@@ -796,13 +1115,128 @@ io.on('connection', (socket) => {
     idsRemovidos.forEach((id) => io.emit('postDeletado', { postId: id }));
   });
 
+  // ---------- Reportar post (usuário comum) ----------
+  socket.on('reportarPost', ({ postId, motivo } = {}) => {
+    const userId = socket.userId;
+    if (!postId || !motivo || !String(motivo).trim()) return;
+    const post = postsDb.get('posts').find({ id: postId }).value();
+    if (!post) return;
+
+    const usuario = obterUsuarioPorId(userId);
+    if (!usuario) return;
+
+    const report = {
+      id: gerarId('r'),
+      tipo: 'manual',
+      motivo: String(motivo).trim().slice(0, 280),
+      deUserId: userId,
+      targetUserId: post.authorId,
+      postId,
+      resolvido: false,
+      createdAt: Date.now()
+    };
+    reportsDb.get('reports').unshift(report).write();
+
+    notificarAdmins(
+      `${usuario.name} (@${usuario.handle}) reportou post: ${report.motivo}`,
+      'reporte',
+      userId
+    );
+
+    io.emit('reporteCriado', report);
+    socket.emit('reporteEnviado', { ok: true });
+  });
+
+  // ---------- Admin: banir usuário ----------
+  socket.on('adminBanirUsuario', ({ alvoId, motivo } = {}) => {
+    if (!socket.usuario || socket.usuario.role !== 'admin') {
+      socket.emit('erroAcao', { error: 'Acesso restrito.' });
+      return;
+    }
+    const usuario = obterUsuarioPorId(alvoId);
+    if (!usuario) {
+      socket.emit('erroAcao', { error: 'Usuário não encontrado.' });
+      return;
+    }
+    if (usuario.role === 'admin') {
+      socket.emit('erroAcao', { error: 'Não é possível banir outro admin.' });
+      return;
+    }
+
+    usersDb.get('users').find({ id: alvoId }).assign({
+      banned: true,
+      banReason: motivo || 'Violação das regras',
+      bannedAt: Date.now(),
+      bannedBy: socket.usuario.id
+    }).write();
+    revogarSessoesDoUsuario(alvoId);
+    io.to(`user:${alvoId}`).emit('usuarioBanido', {
+      motivo: motivo || 'Violação das regras',
+      strikes: usuario.strikes || 0
+    });
+    notificarAdmins(
+      `${usuario.name} (@${usuario.handle}) foi banido por ${socket.usuario.name}.`,
+      'banimento',
+      alvoId
+    );
+    io.emit('usuarioAtualizado', { id: alvoId, banned: true });
+  });
+
+  // ---------- Admin: desbanir usuário ----------
+  socket.on('adminDesbanirUsuario', ({ alvoId } = {}) => {
+    if (!socket.usuario || socket.usuario.role !== 'admin') {
+      socket.emit('erroAcao', { error: 'Acesso restrito.' });
+      return;
+    }
+    const usuario = obterUsuarioPorId(alvoId);
+    if (!usuario) {
+      socket.emit('erroAcao', { error: 'Usuário não encontrado.' });
+      return;
+    }
+
+    usersDb.get('users').find({ id: alvoId }).assign({
+      banned: false,
+      banReason: '',
+      bannedAt: 0,
+      bannedBy: '',
+      strikes: 0
+    }).write();
+
+    notificarAdmins(
+      `${usuario.name} (@${usuario.handle}) foi desbanido por ${socket.usuario.name}.`,
+      'banimento',
+      alvoId
+    );
+    io.emit('usuarioAtualizado', { id: alvoId, banned: false });
+  });
+
+  // ---------- Admin: forçar deletar post de outro usuário ----------
+  socket.on('adminDeletarPost', ({ postId } = {}) => {
+    const userId = socket.userId;
+    const usuario = socket.usuario;
+    if (!usuario || usuario.role !== 'admin') {
+      socket.emit('erroAcao', { error: 'Acesso restrito.' });
+      return;
+    }
+    const post = postsDb.get('posts').find({ id: postId }).value();
+    if (!post) return;
+
+    // Limpa arquivos de mídia do disco
+    removerMidiaPost(post);
+    postsDb.get('posts').remove({ id: postId }).write();
+    io.emit('postDeletado', { postId });
+    io.emit('postModerado', { postId, adminId: userId });
+  });
+
   socket.on('comentar', ({ postId, texto } = {}) => {
     const userId = socket.userId;
     const post = postsDb.get('posts').find({ id: postId }).value();
     if (!post) return;
 
     if (textoTemPalavraOfensiva(texto)) {
-      socket.emit('erroAcao', { error: 'Comentário bloqueado por conteúdo ofensivo.' });
+      const strikes = registrarStrike(userId, 'Comentário ofensivo');
+      const msg = strikes ? `Comentário bloqueado. Strike ${strikes}/${MAX_STRIKES}.` : 'Comentário bloqueado por conteúdo ofensivo.';
+      socket.emit('erroAcao', { error: msg });
       return;
     }
 
@@ -824,6 +1258,12 @@ io.on('connection', (socket) => {
     postsDb.get('posts').find({ id: postId }).assign(post).write();
     io.emit('postAtualizado', post);
 
+    // Notifica usuários mencionados no comentário
+    extrairUsuariosMencionados(comentario.texto, userId).forEach((uid) => {
+      const notif = criarNotificacao(uid, `${usuario ? usuario.name : 'Alguém'} mencionou você em um comentário`, 'menção', userId);
+      if (notif) io.to(`user:${uid}`).emit('notificacao', notif);
+    });
+
     if (post.authorId !== userId) {
       const notif = criarNotificacao(
         post.authorId,
@@ -835,22 +1275,43 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('enviarMensagem', ({ toId, texto } = {}) => {
+  socket.on('enviarMensagem', ({ toId, texto, imagem, video, audio } = {}) => {
     const fromId = socket.userId;
     const remetente = obterUsuarioPorId(fromId);
     const destinatario = obterUsuarioPorId(toId);
-    if (!remetente || !destinatario || !texto || !String(texto).trim()) return;
+    if (!remetente || !destinatario) return;
 
     if (textoTemPalavraOfensiva(texto)) {
-      socket.emit('erroAcao', { error: 'Mensagem bloqueada por conteúdo ofensivo.' });
+      const strikes = registrarStrike(fromId, 'Mensagem ofensiva');
+      const msg = strikes ? `Mensagem bloqueada. Strike ${strikes}/${MAX_STRIKES}.` : 'Mensagem bloqueada por conteúdo ofensivo.';
+      socket.emit('erroAcao', { error: msg });
       return;
     }
+
+    let imgUrl = null;
+    let vidUrl = null;
+    let audUrl = null;
+    try {
+      if (imagem) imgUrl = salvarMidiaBase64(String(imagem).trim(), 'image', MAX_IMAGE_BYTES);
+      if (video) vidUrl = salvarMidiaBase64(String(video).trim(), 'video', MAX_VIDEO_BYTES);
+      if (audio) audUrl = salvarMidiaBase64(String(audio).trim(), 'audio', MAX_IMAGE_BYTES);
+    } catch (err) {
+      socket.emit('erroAcao', { error: err.message || 'Mídia inválida.' });
+      return;
+    }
+
+    const textoLimpo = String(texto || '').trim().slice(0, 280);
+    if (!textoLimpo && !imgUrl && !vidUrl && !audUrl) return;
 
     const mensagem = {
       id: gerarId('m'),
       fromId,
       toId,
-      texto: String(texto).trim().slice(0, 280),
+      texto: textoLimpo,
+      imagem: imgUrl,
+      video: vidUrl,
+      audio: audUrl,
+      tipo: imgUrl ? 'imagem' : (vidUrl ? 'video' : (audUrl ? 'audio' : 'texto')),
       createdAt: Date.now()
     };
 
@@ -859,7 +1320,7 @@ io.on('connection', (socket) => {
 
     const notif = criarNotificacao(
       toId,
-      `${remetente.name} enviou uma mensagem`,
+      `${remetente.name} enviou uma ${mensagem.tipo === 'texto' ? 'mensagem' : mensagem.tipo}`,
       'mensagem',
       fromId
     );
@@ -899,6 +1360,50 @@ io.on('connection', (socket) => {
       );
       if (notif) io.to(`user:${alvoId}`).emit('notificacao', notif);
     }
+  });
+
+  // ---------- Chamada de voz (WebRTC via Socket.io) ----------
+  // Sinalização apenas: os dois lados trocam offer/answer/ICE diretamente.
+  socket.on('chamarVoz', ({ toId } = {}) => {
+    const fromId = socket.userId;
+    const remetente = obterUsuarioPorId(fromId);
+    const destinatario = obterUsuarioPorId(toId);
+    if (!remetente || !destinatario || fromId === toId) return;
+
+    io.to(`user:${toId}`).emit('chamadaVozEntrada', {
+      callId: `${fromId}-${toId}-${Date.now()}`,
+      fromId,
+      fromName: remetente.name,
+      fromHandle: remetente.handle,
+      fromAvatar: remetente.avatar
+    });
+  });
+
+  socket.on('chamadaVozResposta', ({ toId, aceita, callId } = {}) => {
+    const fromId = socket.userId;
+    const remetente = obterUsuarioPorId(fromId);
+    if (!remetente) return;
+    if (aceita) {
+      io.to(`user:${toId}`).emit('chamadaVozAceita', { callId, toName: remetente.name, toHandle: remetente.handle, toAvatar: remetente.avatar });
+    } else {
+      io.to(`user:${toId}`).emit('chamadaVozRejeitada', { callId });
+    }
+  });
+
+  // Reencaminha oferta/resposta/ICE do WebRTC para o participante da chamada
+  socket.on('sinalVoz', ({ toId, fromId, descricao, candidato } = {}) => {
+    if (!toId || !descricao) return;
+    const remetente = socket.usuario;
+    if (!remetente) return;
+    io.to(`user:${toId}`).emit('sinalVoz', {
+      fromId,
+      descricao,
+      candidato
+    });
+  });
+
+  socket.on('encerrarChamada', ({ toId } = {}) => {
+    if (toId) io.to(`user:${toId}`).emit('chamadaEncerrada', { fromId: socket.userId });
   });
 
   socket.on('disconnect', () => {

@@ -1,36 +1,28 @@
 // ============================================================
 // TADASHI - script.js
-// Frontend puro (sem frameworks). Responsável por:
-// - Tela de login (escolha de perfil entre os 5 usuários)
-// - Conexão Socket.io e escuta de eventos em tempo real
-// - Renderização do feed, posts, likes, reposts, comentários
-// - Dark mode com localStorage
-// - Toasts de notificação e scroll infinito simulado
+// Frontend com autenticação por token (Bearer) + Socket.io
 // ============================================================
 
-// ---------- ESTADO GLOBAL DA APLICAÇÃO ----------
-const socket = io(); // conecta automaticamente ao servidor Socket.io
-
-let usuarioAtual = null;   // usuário logado (objeto completo)
-let todosUsuarios = [];    // lista dos 5 usuários pré-cadastrados
-let posts = [];            // cache local dos posts renderizados
-let mensagens = [];        // cache local das mensagens privadas
+// ---------- ESTADO GLOBAL ----------
+let socket = null;
+let authToken = null;
+let usuarioAtual = null;
+let todosUsuarios = [];
+let posts = [];
+let mensagens = [];
 let contatoMensagemAtual = null;
-let imagemSelecionada = null; // base64 da imagem do post em criação
-let videoSelecionado = null; // base64 do vídeo do post em criação
-let perfilSelecionadoId = null; // perfil que está sendo renderizado no momento
+let imagemSelecionada = null;
+let videoSelecionado = null;
+let perfilSelecionadoId = null;
 let mobile = false;
-
-// quantidade de posts exibidos por "página" no scroll infinito simulado
 let postsExibidos = 10;
-
-// controla qual "página" interna está ativa: inicio | explorar | perfil | notificacoes
 let paginaAtual = 'inicio';
-
-// histórico de notificações recebidas nesta sessão (para o badge e a página de notificações)
 let notificacoes = [];
+let socketConfigurado = false;
 
-// ---------- REFERÊNCIAS DO DOM ----------
+const TOKEN_KEY = 'tadashi_token';
+
+// ---------- DOM ----------
 const telaLogin = document.getElementById('tela-login');
 const listaUsuariosEl = document.getElementById('lista-usuarios');
 const formLogin = document.getElementById('form-login');
@@ -67,6 +59,7 @@ const previewVideoWrap = document.getElementById('preview-video-wrap');
 const previewVideo = document.getElementById('preview-video');
 const btnRemoverVideo = document.getElementById('btn-remover-video');
 const btnAddVideoArquivo = document.getElementById('input-arquivo-video');
+const btnAddImagemArquivo = document.getElementById('input-arquivo-imagem');
 
 const listaPostsEl = document.getElementById('lista-posts');
 const listaVideosEl = document.getElementById('lista-videos');
@@ -74,9 +67,6 @@ const carregandoMaisEl = document.getElementById('carregando-mais');
 const sugestoesUsuariosEl = document.getElementById('sugestoes-usuarios');
 const toastContainer = document.getElementById('toast-container');
 
-const btnAddImagemArquivo = document.getElementById('input-arquivo-imagem');
-
-// navegação entre páginas
 const navItens = document.querySelectorAll('.nav-item[data-pagina]');
 const paginas = {
   inicio: document.getElementById('pagina-inicio'),
@@ -84,14 +74,25 @@ const paginas = {
   videos: document.getElementById('pagina-videos'),
   perfil: document.getElementById('pagina-perfil'),
   notificacoes: document.getElementById('pagina-notificacoes'),
-  mensagens: document.getElementById('pagina-mensagens')
+  mensagens: document.getElementById('pagina-mensagens'),
+  admin: document.getElementById('pagina-admin')
 };
 
-// página Explorar
 const inputBusca = document.getElementById('input-busca');
 const listaBuscaEl = document.getElementById('lista-busca');
 
-// página Perfil
+// ===== DOM do painel admin =====
+const navAdmin = document.getElementById('nav-admin');
+const btnAdminReports = document.getElementById('btn-admin-reports');
+const btnAdminUsers = document.getElementById('btn-admin-users');
+const btnAdminPosts = document.getElementById('btn-admin-posts');
+const tabReports = document.getElementById('admin-tabpanel-reports');
+const tabUsers = document.getElementById('admin-tabpanel-users');
+const tabPosts = document.getElementById('admin-tabpanel-posts');
+const listaReports = document.getElementById('lista-reports');
+const listaAdminUsers = document.getElementById('lista-admin-users');
+const listaAdminPosts = document.getElementById('lista-admin-posts');
+
 const perfilAvatar = document.getElementById('perfil-avatar');
 const btnMudarAvatar = document.getElementById('btn-mudar-avatar');
 const inputAvatarArquivo = document.getElementById('input-avatar-arquivo');
@@ -103,46 +104,151 @@ const perfilSeguidores = document.getElementById('perfil-seguidores');
 const perfilPostsQtd = document.getElementById('perfil-posts-qtd');
 const listaPostsPerfilEl = document.getElementById('lista-posts-perfil');
 
-// página Notificações
 const listaNotificacoesEl = document.getElementById('lista-notificacoes');
 const badgeNotif = document.getElementById('badge-notif');
 
-// página Mensagens
-const paginaMensagens = document.getElementById('pagina-mensagens');
 const listaContatosEl = document.getElementById('lista-contatos');
 const conversaHeaderEl = document.getElementById('conversa-header');
 const listaMensagensEl = document.getElementById('lista-mensagens');
 const formMensagem = document.getElementById('form-mensagem');
 const inputMensagem = document.getElementById('input-mensagem');
 
+// ===== Mídia nas mensagens =====
+const btnMsgImagem = document.getElementById('btn-msg-imagem');
+const inputMsgImagem = document.getElementById('input-msg-imagem');
+const btnMsgVideo = document.getElementById('btn-msg-video');
+const inputMsgVideo = document.getElementById('input-msg-video');
+const btnMsgAudio = document.getElementById('btn-msg-audio');
+const inputMsgAudio = document.getElementById('input-msg-audio');
+let midiaMensagem = { imagem: null, video: null, audio: null };
+
+// ===== Marcar pessoas (menção) =====
+const btnMencionar = document.getElementById('btn-mencionar');
+const modalMencao = document.getElementById('modal-mencao');
+const btnFecharMencao = document.getElementById('btn-fechar-mencao');
+const inputMencaoBusca = document.getElementById('input-mencao-busca');
+const listaMencao = document.getElementById('lista-mencao');
+
+// ===== Chamada de voz =====
+const callOverlay = document.getElementById('call-overlay');
+const callAvatar = document.getElementById('call-avatar');
+const callStatusEl = document.getElementById('call-status');
+const callInfoEl = document.getElementById('call-info');
+const callBtnMute = document.getElementById('call-btn-mute');
+const callBtnEnd = document.getElementById('call-btn-end');
+const callBtnAceitar = document.getElementById('call-btn-aceitar');
+const callBtnRecusar = document.getElementById('call-btn-recusar');
+let peer = null;
+let streamLocal = null;
+let chamadaAtiva = false;
+let callIdAtual = null;
+let callContatoId = null;   // contato envolvido na chamada atual
+let callDirecao = null;     // 'out' (criando) ou 'in' (recebendo)
+let callMudo = false;
+let sinalPendenteIn = [];   // buffer de sinais WebRTC de chamadas recebidas ainda não aceitas
+
 // ============================================================
-// INICIALIZAÇÃO
+// HTTP helpers
+// ============================================================
+function authHeaders(extra = {}) {
+  const headers = { ...extra };
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
+  return headers;
+}
+
+async function api(url, options = {}) {
+  const opts = { ...options };
+  opts.headers = authHeaders(opts.headers || {});
+
+  const resp = await fetch(url, opts);
+  let data = null;
+  const text = await resp.text();
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = { error: text || 'Resposta inválida do servidor.' };
+  }
+
+  if (resp.status === 401 && authToken) {
+    limparSessaoLocal();
+    mostrarTelaLogin();
+    throw new Error(data?.error || 'Sessão expirada.');
+  }
+
+  return { resp, data };
+}
+
+function salvarToken(token) {
+  authToken = token;
+  if (token) localStorage.setItem(TOKEN_KEY, token);
+  else localStorage.removeItem(TOKEN_KEY);
+}
+
+function limparSessaoLocal() {
+  pararChamadaVoz();
+  authToken = null;
+  usuarioAtual = null;
+  perfilSelecionadoId = null;
+  posts = [];
+  mensagens = [];
+  notificacoes = [];
+  localStorage.removeItem(TOKEN_KEY);
+  if (socket) {
+    socket.removeAllListeners();
+    socket.disconnect();
+    socket = null;
+    socketConfigurado = false;
+  }
+}
+
+// ============================================================
+// INIT
 // ============================================================
 init();
 
 async function init() {
-  verificarDispositivo();    // identifica mobile/desktop para layout e UI
-  aplicarTemaSalvo();       // recupera dark/light do localStorage
-  await carregarUsuarios(); // busca os 5 usuários da API
-  configurarEventos();      // liga todos os listeners de clique/input
-  configurarSocket();       // liga os listeners de eventos em tempo real
+  verificarDispositivo();
+  aplicarTemaSalvo();
+  configurarEventos();
+  await carregarUsuarios();
 
-  // se já havia um usuário logado nesta sessão do navegador, entra direto
-  const salvoId = sessionStorage.getItem('tadashi_user_id');
-  if (salvoId) {
-    const usuario = todosUsuarios.find((u) => u.id === salvoId);
-    if (usuario) entrarComoUsuario(usuario);
+  const tokenSalvo = localStorage.getItem(TOKEN_KEY);
+  if (tokenSalvo) {
+    authToken = tokenSalvo;
+    try {
+      const { resp, data } = await api('/api/me');
+      if (resp.ok && data?.id) {
+        await entrarComoUsuario(data, tokenSalvo);
+        return;
+      }
+    } catch {
+      // token inválido
+    }
+    limparSessaoLocal();
   }
+
+  mostrarTelaLogin();
 }
 
-// Busca a lista de usuários pré-cadastrados no backend e monta a tela de login
+function mostrarTelaLogin() {
+  appEl.classList.add('hidden');
+  telaLogin.classList.remove('hidden');
+  btnMudarAvatar.classList.add('hidden');
+}
+
 async function carregarUsuarios() {
-  const resp = await fetch('/api/users');
-  todosUsuarios = await resp.json();
+  const { resp, data } = await api('/api/users');
+  if (!resp.ok) {
+    todosUsuarios = [];
+    listaUsuariosEl.innerHTML = '<div class="notificacao-vazia">Não foi possível carregar usuários.</div>';
+    return;
+  }
+
+  todosUsuarios = Array.isArray(data) ? data : [];
 
   listaUsuariosEl.innerHTML = todosUsuarios.map((u) => `
-    <button class="usuario-card" data-id="${u.id}">
-      <img class="avatar" src="${u.avatar}" alt="${u.name}">
+    <button type="button" class="usuario-card" data-id="${u.id}">
+      <img class="avatar" src="${escaparAttr(u.avatar)}" alt="${escaparAttr(u.name)}">
       <div>
         <div class="usuario-card-nome">${escaparHtml(u.name)}</div>
         <div class="usuario-card-handle">${escaparHtml(u.handle)}</div>
@@ -150,59 +256,109 @@ async function carregarUsuarios() {
     </button>
   `).join('');
 
-  // cada card de usuário preenche o handle do formulário de login e leva o foco para a senha
   listaUsuariosEl.querySelectorAll('.usuario-card').forEach((card) => {
-    card.addEventListener('click', () => {
+    card.addEventListener('click', async () => {
       const usuario = todosUsuarios.find((u) => u.id === card.dataset.id);
       if (!usuario) return;
-      inputLoginHandle.value = usuario.handle;
-      inputLoginSenha.focus();
+      limparErroLogin();
+
+      // Login rápido (demo): entra direto ao escolher o perfil
+      try {
+        const { resp, data } = await api('/api/quick-login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ handle: usuario.handle })
+        });
+        if (!resp.ok) {
+          mostrarErroLogin(data?.error || 'Não foi possível entrar automaticamente.');
+          return;
+        }
+        await carregarUsuarios();
+        await entrarComoUsuario(data.user, data.token);
+        formLogin.reset();
+        limparErroLogin();
+      } catch (err) {
+        mostrarErroLogin(err.message || 'Erro de conexão.');
+      }
     });
   });
 }
 
 // ============================================================
-// LOGIN / LOGOUT
+// LOGIN / LOGOUT / SESSÃO
 // ============================================================
-
-// Define o usuário logado, esconde a tela de login e carrega o feed
-function entrarComoUsuario(usuario) {
+async function entrarComoUsuario(usuario, token) {
   usuarioAtual = usuario;
   perfilSelecionadoId = usuario.id;
-  sessionStorage.setItem('tadashi_user_id', usuario.id);
+  salvarToken(token);
+
+  // Atualiza cache local do usuário logado
+  const idx = todosUsuarios.findIndex((u) => u.id === usuario.id);
+  if (idx !== -1) todosUsuarios[idx] = { ...todosUsuarios[idx], ...usuario };
+  else todosUsuarios.push(usuario);
 
   telaLogin.classList.add('hidden');
   appEl.classList.remove('hidden');
+  navAdmin.classList.toggle('hidden', usuario.role !== 'admin');
   btnMudarAvatar.classList.remove('hidden');
 
   headerAvatar.src = usuario.avatar;
   headerHandle.textContent = usuario.handle;
   compositorAvatar.src = usuario.avatar;
 
+  conectarSocket();
   renderizarSugestoes();
-  carregarFeedInicial();
-  carregarMensagens();
+  await Promise.all([
+    carregarFeedInicial(),
+    carregarMensagens(),
+    carregarNotificacoes()
+  ]);
 }
 
-// Sai da conta atual e volta para a tela de login
-function sair() {
-  usuarioAtual = null;
-  perfilSelecionadoId = null;
-  sessionStorage.removeItem('tadashi_user_id');
-  btnMudarAvatar.classList.add('hidden');
-  appEl.classList.add('hidden');
-  telaLogin.classList.remove('hidden');
+function conectarSocket() {
+  if (!authToken) return;
+
+  if (socket) {
+    socket.removeAllListeners();
+    socket.disconnect();
+    socket = null;
+    socketConfigurado = false;
+  }
+
+  socket = io({
+    auth: { token: authToken },
+    reconnection: true,
+    reconnectionAttempts: 10
+  });
+
+  configurarSocket();
+}
+
+async function sair() {
+  try {
+    if (authToken) {
+      await api('/api/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    }
+  } catch {
+    // ignora erro de rede no logout
+  }
+  limparSessaoLocal();
+  mostrarTelaLogin();
+  await carregarUsuarios();
 }
 
 // ============================================================
-// MENSAGENS PRIVADAS
+// MENSAGENS
 // ============================================================
-
 async function carregarMensagens() {
-  if (!usuarioAtual) return;
+  if (!usuarioAtual || !authToken) return;
 
-  const resp = await fetch(`/api/messages/${usuarioAtual.id}`);
-  mensagens = await resp.json();
+  const { resp, data } = await api('/api/messages');
+  if (!resp.ok) {
+    mensagens = [];
+    return;
+  }
+  mensagens = Array.isArray(data) ? data : [];
   renderizarContatos();
   renderizarConversa();
 }
@@ -222,8 +378,8 @@ function renderizarContatos() {
   }
 
   listaContatosEl.innerHTML = contatos.map((u) => `
-    <button class="contato-card ${u.id === contatoMensagemAtual ? 'ativo' : ''}" data-contato="${u.id}">
-      <img class="avatar avatar-sm" src="${u.avatar}" alt="${u.name}">
+    <button type="button" class="contato-card ${u.id === contatoMensagemAtual ? 'ativo' : ''}" data-contato="${u.id}">
+      <img class="avatar avatar-sm" src="${escaparAttr(u.avatar)}" alt="${escaparAttr(u.name)}">
       <div>
         <div class="contato-nome">${escaparHtml(u.name)}</div>
         <div class="contato-handle">${escaparHtml(u.handle)}</div>
@@ -251,22 +407,29 @@ function renderizarConversa() {
   if (!contato) return;
 
   conversaHeaderEl.innerHTML = `
-    <img class="avatar avatar-sm" src="${contato.avatar}" alt="${escaparHtml(contato.name)}">
-    <div>
+    <img class="avatar avatar-sm" src="${escaparAttr(contato.avatar)}" alt="${escaparAttr(contato.name)}">
+    <div class="conversa-info">
       <div class="conversa-nome">${escaparHtml(contato.name)}</div>
       <div class="conversa-handle">${escaparHtml(contato.handle)}</div>
     </div>
+    <button id="btn-chamada" class="btn-icone" title="Chamada de voz">📞</button>
   `;
 
-  const conversa = mensagens.filter((m) =>
-    (m.fromId === usuarioAtual.id && m.toId === contato.id) ||
-    (m.fromId === contato.id && m.toId === usuarioAtual.id)
-  ).sort((a, b) => a.createdAt - b.createdAt);
+  conversaHeaderEl.querySelector('#btn-chamada')?.addEventListener('click', () => {
+    iniciarChamadaVoz(contato.id);
+  });
+
+  const conversa = mensagens
+    .filter((m) =>
+      (m.fromId === usuarioAtual.id && m.toId === contato.id) ||
+      (m.fromId === contato.id && m.toId === usuarioAtual.id)
+    )
+    .sort((a, b) => a.createdAt - b.createdAt);
 
   listaMensagensEl.innerHTML = conversa.length
-    ? conversa.map((m) => `
+    ? conversa.map((m) => `\
       <div class="mensagem-item ${m.fromId === usuarioAtual.id ? 'mine' : ''}">
-        <div class="mensagem-bala">${escaparHtml(m.texto)}</div>
+        <div class="mensagem-bala">${conteudoMensagem(m)}</div>
         <div class="mensagem-data">${tempoRelativo(m.createdAt)}</div>
       </div>
     `).join('')
@@ -275,27 +438,56 @@ function renderizarConversa() {
   listaMensagensEl.scrollTop = listaMensagensEl.scrollHeight;
 }
 
-// Busca todos os posts existentes via REST (carga inicial) e renderiza
+// Monta o conteúdo de uma mensagem (texto, imagem, vídeo ou áudio)
+function conteudoMensagem(m) {
+  let html = '';
+  if (m.imagem) html += `<img class="msg-midia msg-img" src="${escaparAttr(m.imagem)}" alt="foto">`;
+  if (m.video) html += `<video class="msg-midia msg-video" controls playsinline src="${escaparAttr(m.video)}"></video>`;
+  if (m.audio) html += `<audio class="msg-midia msg-audio" controls src="${escaparAttr(m.audio)}"></audio>`;
+  if (m.texto) html += `<div class="msg-texto">${formatarMencoes(escaparHtml(m.texto))}</div>`;
+  if (!html) html = '<div class="msg-texto">💬</div>';
+  return html;
+}
+
+// Transforma @handle em link clicável (espera texto já escapado)
+function formatarMencoes(textoEscapado) {
+  return String(textoEscapado).replace(
+    /@([a-zA-Z0-9_]{2,30})/g,
+    (m, handle) => `<span class="mencao-link" data-mencao="${m}">${m}</span>`
+  );
+}
+
+// ============================================================
+// FEED / POSTS
+// ============================================================
 async function carregarFeedInicial() {
-  const resp = await fetch('/api/posts');
-  posts = await resp.json(); // já vem ordenado do mais novo para o mais antigo
+  const { resp, data } = await api('/api/posts');
+  if (!resp.ok) {
+    posts = [];
+    renderizarFeed();
+    return;
+  }
+  posts = Array.isArray(data) ? data : [];
   postsExibidos = 10;
   renderizarFeed();
 }
 
-// Renderiza a lista de posts no DOM, respeitando o limite do "scroll infinito"
 function renderizarFeed() {
+  if (!usuarioAtual) return;
   const visiveis = posts.slice(0, postsExibidos);
   listaPostsEl.innerHTML = visiveis.map((p) => templatePost(p)).join('');
   ligarEventosDosPostsEm(listaPostsEl);
-
-  // mostra/esconde o indicador de "carregando mais"
   carregandoMaisEl.classList.toggle('hidden', postsExibidos >= posts.length);
+
+  if (paginaAtual === 'videos') renderizarVideos();
+  if (paginaAtual === 'explorar') renderizarBusca(inputBusca.value.trim().toLowerCase());
+  if (paginaAtual === 'perfil' && perfilSelecionadoId) {
+    // re-render leve dos posts do perfil a partir do cache quando possível
+  }
 }
 
-// Gera o HTML de um único post (usado tanto para posts normais quanto reposts)
 function templatePost(p) {
-  const jaCurtiu = p.likes.includes(usuarioAtual.id);
+  const jaCurtiu = (p.likes || []).includes(usuarioAtual.id);
   const totalComentarios = (p.comentarios || []).length;
 
   const labelRepost = p.repostBy
@@ -303,43 +495,47 @@ function templatePost(p) {
     : '';
 
   const imagemHtml = p.imagem
-    ? `<img class="post-imagem" src="${p.imagem}" alt="imagem do post" onerror="this.style.display='none'">`
+    ? `<img class="post-imagem" src="${escaparAttr(p.imagem)}" alt="imagem do post" onerror="this.style.display='none'">`
     : '';
 
   const videoHtml = p.video
-    ? `<video class="post-video" controls playsinline preload="auto" src="${p.video}" aria-label="Vídeo do post"></video>`
+    ? `<video class="post-video" controls playsinline preload="metadata" src="${escaparAttr(p.video)}" aria-label="Vídeo do post"></video>`
     : '';
 
-  const podeDeletar = p.authorId === usuarioAtual.id;
+  const podeDeletar =
+    p.authorId === usuarioAtual.id ||
+    (p.repostBy && p.repostBy.id === usuarioAtual.id) ||
+    usuarioAtual.role === 'admin';
 
   const comentariosHtml = (p.comentarios || []).map((c) => `
-    <div class="comentario-item"><strong>${escaparHtml(c.autor)}</strong>${escaparHtml(c.texto)}</div>
+    <div class="comentario-item"><strong>${escaparHtml(c.autor)}</strong> ${formatarMencoes(escaparHtml(c.texto))}</div>
   `).join('');
 
   return `
-    <article class="post" data-id="${p.id}">
+    <article class="post" data-id="${escaparAttr(p.id)}">
       ${labelRepost}
-      <img class="avatar post-avatar-link" data-user="${p.authorId}" src="${p.authorAvatar}" alt="${p.authorName}">
+      <img class="avatar post-avatar-link" data-user="${escaparAttr(p.authorId)}" src="${escaparAttr(p.authorAvatar)}" alt="${escaparAttr(p.authorName)}">
       <div class="post-corpo">
         <div class="post-cabecalho">
-          <span class="post-nome post-avatar-link" data-user="${p.authorId}">${escaparHtml(p.authorName)}</span>
+          <span class="post-nome post-avatar-link" data-user="${escaparAttr(p.authorId)}">${escaparHtml(p.authorName)}</span>
           <span class="post-handle">${escaparHtml(p.authorHandle)}</span>
           <span class="post-tempo">· ${tempoRelativo(p.createdAt)}</span>
         </div>
-        <div class="post-texto">${escaparHtml(p.texto)}</div>
+        <div class="post-texto">${formatarMencoes(escaparHtml(p.texto))}</div>
         ${imagemHtml}
         ${videoHtml}
         <div class="post-acoes">
-          <button class="post-acao comentario" data-acao="comentario">
+          <button type="button" class="post-acao comentario" data-acao="comentario">
             💬 <span>${totalComentarios}</span>
           </button>
-          <button class="post-acao repost ${p.repostBy && p.repostBy.id === usuarioAtual.id ? 'repostado' : ''}" data-acao="repost">
+          <button type="button" class="post-acao repost ${p.repostBy && p.repostBy.id === usuarioAtual.id ? 'repostado' : ''}" data-acao="repost">
             🔁
           </button>
-          <button class="post-acao like ${jaCurtiu ? 'curtido' : ''}" data-acao="like">
-            <span class="icone-coracao">${jaCurtiu ? '❤️' : '🤍'}</span> <span class="qtd-likes">${p.likes.length}</span>
+          <button type="button" class="post-acao like ${jaCurtiu ? 'curtido' : ''}" data-acao="like">
+            <span class="icone-coracao">${jaCurtiu ? '❤️' : '🤍'}</span> <span class="qtd-likes">${(p.likes || []).length}</span>
           </button>
-          ${podeDeletar ? `<button class="post-acao deletar" data-acao="deletar">🗑️</button>` : '<span></span>'}
+          ${p.authorId !== usuarioAtual.id ? '<button type="button" class="post-acao reportar" data-acao="reportar" title="Reportar">🚩</button>' : ''}
+          ${podeDeletar ? '<button type="button" class="post-acao deletar" data-acao="deletar">🗑️</button>' : '<span></span>'}
         </div>
         <div class="post-comentarios hidden" data-comentarios>
           ${comentariosHtml}
@@ -353,69 +549,149 @@ function templatePost(p) {
   `;
 }
 
-// Liga os eventos de clique (like, repost, deletar, comentar) em cada post renderizado
-// Recebe o container (feed principal, resultados de busca ou posts do perfil)
 function ligarEventosDosPostsEm(container) {
+  if (!socket || !usuarioAtual) return;
+
   container.querySelectorAll('.post').forEach((el) => {
     const postId = el.dataset.id;
 
-    el.querySelector('[data-acao="like"]').addEventListener('click', () => {
-      socket.emit('curtir', { postId, userId: usuarioAtual.id });
+    el.querySelector('[data-acao="like"]')?.addEventListener('click', () => {
+      socket.emit('curtir', { postId });
     });
 
-    el.querySelector('[data-acao="repost"]').addEventListener('click', () => {
-      socket.emit('repostar', { postId, userId: usuarioAtual.id });
+    el.querySelector('[data-acao="repost"]')?.addEventListener('click', () => {
+      socket.emit('repostar', { postId });
     });
 
     const btnDeletar = el.querySelector('[data-acao="deletar"]');
     if (btnDeletar) {
       btnDeletar.addEventListener('click', () => {
         if (confirm('Deletar este post?')) {
-          socket.emit('deletarPost', { postId, userId: usuarioAtual.id });
+          socket.emit('deletarPost', { postId });
         }
       });
     }
 
-    // abre/fecha a área de comentários
-    el.querySelector('[data-acao="comentario"]').addEventListener('click', () => {
-      el.querySelector('[data-comentarios]').classList.toggle('hidden');
+    el.querySelector('[data-acao="comentario"]')?.addEventListener('click', () => {
+      el.querySelector('[data-comentarios]')?.classList.toggle('hidden');
     });
 
-    // envia um novo comentário
+    // Botão reportar post
+    const btnReportar = el.querySelector('[data-acao="reportar"]');
+    if (btnReportar) {
+      btnReportar.addEventListener('click', () => {
+        const motivo = prompt('Motivo da denúncia (ex: conteúdo ofensivo, spam):') || '';
+        if (motivo.trim()) {
+          socket.emit('reportarPost', { postId, motivo });
+          mostrarToast('Denúncia enviada.');
+        }
+      });
+    }
+
     const form = el.querySelector('.form-comentario');
-    form.addEventListener('submit', (e) => {
+    form?.addEventListener('submit', (e) => {
       e.preventDefault();
       const input = form.querySelector('input');
       const texto = input.value.trim();
       if (!texto) return;
-      socket.emit('comentar', { postId, userId: usuarioAtual.id, texto });
+      socket.emit('comentar', { postId, texto });
       input.value = '';
     });
   });
 }
 
+function atualizarPostNoCache(postAtualizado) {
+  const idx = posts.findIndex((p) => p.id === postAtualizado.id);
+  if (idx !== -1) posts[idx] = postAtualizado;
+}
+
+function patchPostNoDom(postAtualizado) {
+  // Atualização leve: se o post estiver visível, re-renderiza só ele
+  document.querySelectorAll(`.post[data-id="${cssEscape(postAtualizado.id)}"]`).forEach((el) => {
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = templatePost(postAtualizado);
+    const novo = wrapper.firstElementChild;
+    el.replaceWith(novo);
+    ligarEventosDosPostsEm(novo.parentElement || document.body);
+  });
+}
+
+function cssEscape(valor) {
+  if (window.CSS && CSS.escape) return CSS.escape(String(valor));
+  return String(valor).replace(/"/g, '\\"');
+}
+
 // ============================================================
-// SOCKET.IO - EVENTOS RECEBIDOS DO SERVIDOR (TEMPO REAL)
+// SOCKET.IO
 // ============================================================
 function configurarSocket() {
+  if (!socket || socketConfigurado) return;
+  socketConfigurado = true;
 
-  // Um novo post (ou repost) foi criado por qualquer usuário -> insere no topo do feed
+  socket.on('connect_error', (err) => {
+    console.warn('Socket auth/connect error:', err?.message || err);
+    if (String(err?.message || '').includes('autenticado')) {
+      limparSessaoLocal();
+      mostrarTelaLogin();
+      mostrarToast('Sessão expirada. Entre novamente.');
+    }
+  });
+
+  socket.on('erroAcao', ({ error }) => {
+    if (error) mostrarToast(error);
+  });
+
   socket.on('postCriado', (post) => {
     posts.unshift(post);
-    postsExibidos++; // garante que o post novo apareça mesmo respeitando o "limite" do scroll
+    postsExibidos++;
     if (usuarioAtual) renderizarFeed();
-
-    // notificação de repost (a checagem de "é sobre meu post" acontece no evento 'notificacao')
   });
 
-  // Um post foi atualizado (like ou comentário novo) -> substitui no cache e re-renderiza
   socket.on('postAtualizado', (postAtualizado) => {
-    const idx = posts.findIndex((p) => p.id === postAtualizado.id);
-    if (idx !== -1) posts[idx] = postAtualizado;
-    if (usuarioAtual) renderizarFeed();
+    atualizarPostNoCache(postAtualizado);
+    if (!usuarioAtual) return;
+
+    // Atualiza DOM de forma mais leve quando possível
+    const visivel = document.querySelector(`.post[data-id="${cssEscape(postAtualizado.id)}"]`);
+    if (visivel) {
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = templatePost(postAtualizado);
+      const novo = wrapper.firstElementChild;
+      const parent = visivel.parentElement;
+      visivel.replaceWith(novo);
+      // religa eventos só neste post
+      novo.querySelector('[data-acao="like"]')?.addEventListener('click', () => socket.emit('curtir', { postId: postAtualizado.id }));
+      novo.querySelector('[data-acao="repost"]')?.addEventListener('click', () => socket.emit('repostar', { postId: postAtualizado.id }));
+      const btnDel = novo.querySelector('[data-acao="deletar"]');
+      if (btnDel) {
+        btnDel.addEventListener('click', () => {
+          if (confirm('Deletar este post?')) socket.emit('deletarPost', { postId: postAtualizado.id });
+        });
+      }
+      novo.querySelector('[data-acao="comentario"]')?.addEventListener('click', () => {
+        novo.querySelector('[data-comentarios]')?.classList.toggle('hidden');
+      });
+      const form = novo.querySelector('.form-comentario');
+      form?.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const input = form.querySelector('input');
+        const texto = input.value.trim();
+        if (!texto) return;
+        socket.emit('comentar', { postId: postAtualizado.id, texto });
+        input.value = '';
+      });
+      // mantém comentários abertos se estavam
+      if (visivel.querySelector('[data-comentarios]') && !visivel.querySelector('[data-comentarios]').classList.contains('hidden')) {
+        novo.querySelector('[data-comentarios]')?.classList.remove('hidden');
+      }
+    } else if (paginaAtual === 'inicio') {
+      renderizarFeed();
+    }
+
+    if (paginaAtual === 'videos') renderizarVideos();
+    if (paginaAtual === 'perfil' && perfilSelecionadoId) abrirPerfil(perfilSelecionadoId);
   });
 
-  // Um usuário atualizou sua foto de perfil -> atualiza o cache e o feed e o perfil
   socket.on('usuarioAtualizado', ({ id, avatar, name, handle }) => {
     const idx = todosUsuarios.findIndex((u) => u.id === id);
     if (idx !== -1) {
@@ -426,7 +702,7 @@ function configurarSocket() {
       usuarioAtual = { ...usuarioAtual, avatar, name, handle };
       headerAvatar.src = avatar;
       compositorAvatar.src = avatar;
-      perfilAvatar.src = avatar;
+      if (perfilSelecionadoId === id) perfilAvatar.src = avatar;
     }
 
     posts = posts.map((p) => {
@@ -439,95 +715,206 @@ function configurarSocket() {
       renderizarFeed();
       renderizarContatos();
       renderizarConversa();
-      if (paginaAtual === 'perfil') abrirPerfil(usuarioAtual.id);
+      if (paginaAtual === 'perfil') abrirPerfil(perfilSelecionadoId || usuarioAtual.id);
     }
   });
 
-  // Nova mensagem privada -> atualiza o cache do cliente e re-renderiza conversa atual
   socket.on('mensagemCriada', (mensagem) => {
-    mensagens.push(mensagem);
-    if (usuarioAtual) {
-      renderizarContatos();
-      renderizarConversa();
+    if (!usuarioAtual) return;
+    if (mensagem.fromId !== usuarioAtual.id && mensagem.toId !== usuarioAtual.id) return;
+
+    if (!mensagens.some((m) => m.id === mensagem.id)) {
+      mensagens.push(mensagem);
     }
+    renderizarContatos();
+    renderizarConversa();
   });
 
-  // Um post foi deletado -> remove do cache e re-renderiza
   socket.on('postDeletado', ({ postId }) => {
     posts = posts.filter((p) => p.id !== postId);
-    if (usuarioAtual) renderizarFeed();
+    document.querySelectorAll(`.post[data-id="${cssEscape(postId)}"]`).forEach((el) => el.remove());
+    if (paginaAtual === 'videos') renderizarVideos();
+    if (paginaAtual === 'admin' && !tabPosts.classList.contains('hidden')) renderizarAdminPosts();
   });
 
-  // Notificação simples (like, repost ou novo seguidor) -> mostra toast + guarda no histórico
-  socket.on('notificacao', ({ paraUserId, mensagem }) => {
-    if (usuarioAtual && paraUserId === usuarioAtual.id) {
-      mostrarToast(mensagem);
-      notificacoes.unshift({ mensagem, createdAt: Date.now(), lida: paginaAtual === 'notificacoes' });
-      atualizarBadgeNotificacoes();
-      if (paginaAtual === 'notificacoes') renderizarNotificacoes();
+  // Evento recebido diretamente na sala do usuário banido
+  socket.on('usuarioBanido', ({ motivo, strikes }) => {
+    if (usuarioAtual) {
+      const msg = strikes
+        ? `Conta banida (${strikes} strikes): ${motivo}`
+        : `Conta banida: ${motivo}`;
+      alert(msg);
+      limparSessaoLocal();
+      mostrarTelaLogin();
+      mostrarToast('Sua conta foi banida.');
     }
   });
 
-  // Alguém seguiu/deixou de seguir outra pessoa -> atualiza botões "Seguir" em tela e o perfil aberto
-  socket.on('seguidorAtualizado', ({ userId, alvoId }) => {
+  // Novo reporte criado (admin recebe em tempo real)
+  socket.on('reporteCriado', () => {
+    if (paginaAtual === 'admin') carregarReportsAdmin();
+  });
+
+  socket.on('notificacao', (payload) => {
+    if (!usuarioAtual) return;
+
+    // Aceita formato novo (objeto completo) e antigo ({paraUserId, mensagem})
+    const paraUserId = payload.paraUserId;
+    if (paraUserId && paraUserId !== usuarioAtual.id) return;
+
+    const item = {
+      id: payload.id || `local_${Date.now()}`,
+      mensagem: payload.mensagem,
+      createdAt: payload.createdAt || Date.now(),
+      lida: paginaAtual === 'notificacoes',
+      tipo: payload.tipo || 'geral'
+    };
+
+    notificacoes.unshift(item);
+    if (paginaAtual !== 'notificacoes') {
+      mostrarToast(item.mensagem);
+    }
+    atualizarBadgeNotificacoes();
+    if (paginaAtual === 'notificacoes') renderizarNotificacoes();
+  });
+
+  socket.on('seguidorAtualizado', ({ userId, alvoId, following }) => {
     const usuario = todosUsuarios.find((u) => u.id === userId);
-    if (usuario) {
-      // mantém a lista local de "following" sincronizada (usada para desenhar os botões)
-      fetch('/api/users').then((r) => r.json()).then((lista) => {
-        todosUsuarios = lista;
-        if (usuarioAtual) {
-          renderizarSugestoes();
-          if (paginaAtual === 'explorar') {
-            renderizarBusca(inputBusca.value.trim().toLowerCase());
-          }
-          const perfilAtual = usuarioAtual.id;
-          if (paginaAtual === 'perfil' && (userId === usuarioAtual.id || alvoId === usuarioAtual.id)) {
-            abrirPerfil(document.getElementById('perfil-avatar').dataset.userId || perfilAtual);
-          }
-        }
-      });
+    if (usuario && Array.isArray(following)) {
+      usuario.following = following;
+    } else if (usuario) {
+      // fallback: toggle local
+      if (!usuario.following) usuario.following = [];
+      const ja = usuario.following.includes(alvoId);
+      usuario.following = ja
+        ? usuario.following.filter((id) => id !== alvoId)
+        : [...usuario.following, alvoId];
     }
+
+    if (usuarioAtual && usuarioAtual.id === userId && Array.isArray(following)) {
+      usuarioAtual = { ...usuarioAtual, following };
+    }
+
+    if (!usuarioAtual) return;
+    renderizarSugestoes();
+    if (paginaAtual === 'explorar') renderizarBusca(inputBusca.value.trim().toLowerCase());
+    if (paginaAtual === 'perfil') {
+      abrirPerfil(perfilSelecionadoId || usuarioAtual.id);
+    }
+  });
+
+  // ===== Chamada de voz: eventos de sinalização =====
+  socket.on('chamadaVozEntrada', ({ callId, fromName, fromHandle, fromAvatar }) => {
+    if (chamadaAtiva) {
+      // já ocupado: reporta como recusado
+      socket.emit('chamadaVozResposta', { toId: usuarioAtual.id, aceita: false, callId });
+      return;
+    }
+    callIdAtual = callId;
+    callDirecao = 'in';
+    callContatoId = null; // o id do chamador não vem; usamos handle para achar
+    chamadaAtiva = true;
+    callAvatar.src = fromAvatar || '';
+    callInfoEl.textContent = `${fromName} (@${(fromHandle || '').replace(/^@/, '')})`;
+    callStatusEl.textContent = 'Chamada recebida...';
+    callBtnRecusar.classList.remove('hidden');
+    callBtnAceitar.classList.remove('hidden');
+    callBtnMute.classList.add('hidden');
+    callBtnEnd.classList.add('hidden');
+    callOverlay.classList.remove('hidden');
+    // Guarda quem chamou para sinalização
+    const chamador = todosUsuarios.find((u) => u.handle.toLowerCase() === (fromHandle || '').toLowerCase());
+    if (chamador) callContatoId = chamador.id;
+  });
+
+  socket.on('chamadaVozAceita', ({ callId }) => {
+    callIdAtual = callId;
+    callStatusEl.textContent = 'Conectando...';
+    callBtnRecusar.classList.add('hidden');
+    callBtnAceitar.classList.add('hidden');
+    callBtnMute.classList.remove('hidden');
+    callBtnEnd.classList.remove('hidden');
+  });
+
+  socket.on('chamadaVozRejeitada', ({ callId }) => {
+    if (callId && callIdAtual && callId !== callIdAtual) return;
+    mostrarToast('Chamada recusada.');
+    pararChamadaVoz();
+  });
+
+  socket.on('sinalVoz', async ({ fromId, descricao, candidato }) => {
+    // Só processamos sinal da chamada ativa com o contato certo
+    if (!chamadaAtiva || !callContatoId) return;
+
+    // Chamada recebida ainda não aceita: guarda os sinais até criar o peer
+    if (callDirecao === 'in' && !peer) {
+      if (descricao || candidato) sinalPendenteIn.push({ descricao, candidato });
+      return;
+    }
+
+    if (!peer) {
+      try {
+        await criarPeerVoz(callContatoId, callDirecao);
+      } catch (err) {
+        mostrarToast('Não foi possível iniciar a chamada.');
+        pararChamadaVoz();
+        return;
+      }
+    }
+
+    try {
+      if (descricao) {
+        await peer.setRemoteDescription(descricao);
+        if (descricao.type === 'offer') {
+          const resposta = await peer.createAnswer();
+          await peer.setLocalDescription(resposta);
+          socket.emit('sinalVoz', {
+            toId: callContatoId,
+            fromId: usuarioAtual.id,
+            descricao: peer.localDescription,
+            candidato: null
+          });
+        }
+      }
+      if (candidato) {
+        try { await peer.addIceCandidate(candidato); } catch (err) { /* ignora ICE inválido */ }
+      }
+    } catch (err) {
+      console.warn('Erro WebRTC sinal:', err);
+    }
+  });
+
+  socket.on('chamadaEncerrada', ({ fromId }) => {
+    if (fromId && callContatoId && fromId !== callContatoId) return;
+    mostrarToast('Chamada encerrada.');
+    pararChamadaVoz();
   });
 }
 
 // ============================================================
-// CRIAÇÃO DE POST (compositor no topo do feed)
+// EVENTOS UI
 // ============================================================
 function configurarEventos() {
+  inputPost.addEventListener('input', atualizarEstadoCompositor);
 
-  // Contador de caracteres em tempo real + habilita/desabilita botão Postar
-  inputPost.addEventListener('input', () => {
-    const restante = 280 - inputPost.value.length;
-    contadorCaracteres.textContent = restante;
-    contadorCaracteres.classList.toggle('limite', restante <= 20);
-    const temTexto = inputPost.value.trim().length > 0;
-    const temMidia = Boolean(imagemSelecionada || videoSelecionado);
-    btnPostar.disabled = (!temTexto && !temMidia) || restante < 0;
-  });
-
-  // Upload real de imagem: abre o seletor de arquivos do sistema operacional
-  btnAddImagem.addEventListener('click', () => {
-    btnAddImagemArquivo.click();
-  });
-
-  // Quando um arquivo é escolhido, converte para base64 (FileReader) e mostra o preview
+  btnAddImagem.addEventListener('click', () => btnAddImagemArquivo.click());
   btnAddImagemArquivo.addEventListener('change', () => {
     const arquivo = btnAddImagemArquivo.files[0];
     if (!arquivo) return;
-
     if (!arquivo.type.startsWith('image/')) {
       alert('Por favor selecione um arquivo de imagem.');
       return;
     }
-
+    if (arquivo.size > 5 * 1024 * 1024) {
+      alert('Imagem muito grande (máx. 5 MB).');
+      return;
+    }
     const leitor = new FileReader();
     leitor.onload = () => {
-      imagemSelecionada = leitor.result; // string base64 (data:image/...;base64,...)
+      imagemSelecionada = leitor.result;
       previewImagem.src = imagemSelecionada;
       previewWrap.classList.remove('hidden');
-      const temTexto = inputPost.value.trim().length > 0;
-      const temMidia = Boolean(imagemSelecionada || videoSelecionado);
-      btnPostar.disabled = (!temTexto && !temMidia);
+      atualizarEstadoCompositor();
     };
     leitor.readAsDataURL(arquivo);
   });
@@ -537,32 +924,27 @@ function configurarEventos() {
     previewWrap.classList.add('hidden');
     previewImagem.src = '';
     btnAddImagemArquivo.value = '';
-    const temTexto = inputPost.value.trim().length > 0;
-    const temMidia = Boolean(imagemSelecionada || videoSelecionado);
-    btnPostar.disabled = (!temTexto && !temMidia);
+    atualizarEstadoCompositor();
   });
 
-  btnAddVideo.addEventListener('click', () => {
-    btnAddVideoArquivo.click();
-  });
-
+  btnAddVideo.addEventListener('click', () => btnAddVideoArquivo.click());
   btnAddVideoArquivo.addEventListener('change', () => {
     const arquivo = btnAddVideoArquivo.files[0];
     if (!arquivo) return;
-
     if (!arquivo.type.startsWith('video/')) {
       alert('Por favor selecione um arquivo de vídeo.');
       return;
     }
-
+    if (arquivo.size > 40 * 1024 * 1024) {
+      alert('Vídeo muito grande (máx. 40 MB).');
+      return;
+    }
     const leitor = new FileReader();
     leitor.onload = () => {
       videoSelecionado = leitor.result;
       previewVideo.src = videoSelecionado;
       previewVideoWrap.classList.remove('hidden');
-      const temTexto = inputPost.value.trim().length > 0;
-      const temMidia = Boolean(imagemSelecionada || videoSelecionado);
-      btnPostar.disabled = (!temTexto && !temMidia);
+      atualizarEstadoCompositor();
     };
     leitor.readAsDataURL(arquivo);
   });
@@ -572,78 +954,73 @@ function configurarEventos() {
     previewVideoWrap.classList.add('hidden');
     previewVideo.src = '';
     btnAddVideoArquivo.value = '';
-    const temTexto = inputPost.value.trim().length > 0;
-    const temMidia = Boolean(imagemSelecionada || videoSelecionado);
-    btnPostar.disabled = (!temTexto && !temMidia);
+    atualizarEstadoCompositor();
   });
 
   btnMudarAvatar.addEventListener('click', () => {
+    if (!usuarioAtual) return;
     inputAvatarArquivo.click();
   });
 
-  inputAvatarArquivo.addEventListener('change', () => {
+  inputAvatarArquivo.addEventListener('change', async () => {
     const arquivo = inputAvatarArquivo.files[0];
-    if (!arquivo) return;
+    if (!arquivo || !usuarioAtual) return;
 
     if (!arquivo.type.startsWith('image/')) {
       alert('Por favor selecione um arquivo de imagem para o perfil.');
+      return;
+    }
+    if (arquivo.size > 2 * 1024 * 1024) {
+      alert('Avatar muito grande (máx. 2 MB).');
       return;
     }
 
     const leitor = new FileReader();
     leitor.onload = async () => {
       const avatarBase64 = leitor.result;
-      const resp = await fetch(`/api/users/${usuarioAtual.id}/avatar`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ avatar: avatarBase64 })
-      });
+      try {
+        const { resp, data } = await api('/api/users/me/avatar', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ avatar: avatarBase64 })
+        });
 
-      if (!resp.ok) {
-        const data = await resp.json().catch(() => ({}));
-        alert(data.error || 'Não foi possível atualizar a foto de perfil.');
-        return;
+        if (!resp.ok) {
+          alert(data?.error || 'Não foi possível atualizar a foto de perfil.');
+          return;
+        }
+
+        usuarioAtual = { ...usuarioAtual, avatar: data.avatar };
+        const idx = todosUsuarios.findIndex((u) => u.id === usuarioAtual.id);
+        if (idx !== -1) todosUsuarios[idx] = { ...todosUsuarios[idx], avatar: data.avatar };
+
+        headerAvatar.src = data.avatar;
+        compositorAvatar.src = data.avatar;
+        perfilAvatar.src = data.avatar;
+
+        if (paginaAtual === 'perfil') abrirPerfil(usuarioAtual.id);
+        renderizarSugestoes();
+        renderizarContatos();
+        renderizarConversa();
+        mostrarToast('Foto de perfil atualizada.');
+      } catch (err) {
+        alert(err.message || 'Erro ao atualizar avatar.');
       }
-
-      const novoUsuario = await resp.json();
-      usuarioAtual = { ...usuarioAtual, avatar: novoUsuario.avatar };
-
-      const idx = todosUsuarios.findIndex((u) => u.id === usuarioAtual.id);
-      if (idx !== -1) {
-        todosUsuarios[idx] = { ...todosUsuarios[idx], avatar: novoUsuario.avatar };
-      }
-
-      headerAvatar.src = novoUsuario.avatar;
-      compositorAvatar.src = novoUsuario.avatar;
-      perfilAvatar.src = novoUsuario.avatar;
-
-      if (paginaAtual === 'perfil') {
-        abrirPerfil(usuarioAtual.id);
-      }
-
-      renderizarSugestoes();
-      renderizarContatos();
-      renderizarConversa();
-      mostrarToast('Foto de perfil atualizada.');
     };
-
     leitor.readAsDataURL(arquivo);
   });
 
-  // Envia o novo post via Socket.io (o servidor faz o broadcast para todos)
   btnPostar.addEventListener('click', () => {
     const texto = inputPost.value.trim();
-    if (!usuarioAtual) return;
+    if (!usuarioAtual || !socket) return;
     if (!texto && !imagemSelecionada && !videoSelecionado) return;
 
     socket.emit('novoPost', {
-      authorId: usuarioAtual.id,
       texto,
       imagem: imagemSelecionada,
       video: videoSelecionado
     });
 
-    // limpa o compositor
     inputPost.value = '';
     contadorCaracteres.textContent = '280';
     contadorCaracteres.classList.remove('limite');
@@ -657,15 +1034,9 @@ function configurarEventos() {
     btnAddVideoArquivo.value = '';
   });
 
-  // Alterna entre tema claro/escuro e salva a preferência
   btnTema.addEventListener('click', alternarTema);
+  btnSair.addEventListener('click', () => { sair(); });
 
-  // Logout
-  btnSair.addEventListener('click', sair);
-
-  btnMudarAvatar.classList.toggle('hidden', !usuarioAtual);
-
-  // Cadastro de nova conta
   btnCriarConta.addEventListener('click', () => {
     modalCriarConta.classList.remove('hidden');
     inputNomeCadastro.focus();
@@ -673,91 +1044,119 @@ function configurarEventos() {
 
   btnFecharCadastro.addEventListener('click', fecharModalCadastro);
   btnCancelarCadastro.addEventListener('click', fecharModalCadastro);
-
   modalCriarConta.addEventListener('click', (e) => {
     if (e.target === modalCriarConta) fecharModalCadastro();
   });
 
   formLogin.addEventListener('submit', async (e) => {
     e.preventDefault();
-
     const handle = inputLoginHandle.value.trim();
-    const password = inputLoginSenha.value.trim();
+    const password = inputLoginSenha.value;
 
     if (!handle || !password) {
       mostrarErroLogin('Informe handle e senha.');
       return;
     }
 
-    const resp = await fetch('/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ handle, password })
-    });
+    try {
+      const { resp, data } = await api('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ handle, password })
+      });
 
-    const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        mostrarErroLogin(data?.error || 'Não foi possível entrar.');
+        return;
+      }
 
-    if (!resp.ok) {
-      mostrarErroLogin(data.error || 'Não foi possível entrar.');
-      return;
-    }
-
-    const usuario = todosUsuarios.find((u) => u.id === data.id);
-    if (!usuario) {
       await carregarUsuarios();
+      await entrarComoUsuario(data.user, data.token);
+      formLogin.reset();
+      limparErroLogin();
+    } catch (err) {
+      mostrarErroLogin(err.message || 'Erro de conexão.');
     }
-
-    const usuarioLogado = todosUsuarios.find((u) => u.id === data.id) || data;
-    entrarComoUsuario(usuarioLogado);
-    formLogin.reset();
-    limparErroLogin();
   });
 
   formMensagem.addEventListener('submit', async (e) => {
     e.preventDefault();
-
     const texto = inputMensagem.value.trim();
-    if (!texto || !usuarioAtual || !contatoMensagemAtual) return;
+    const temMidia = midiaMensagem.imagem || midiaMensagem.video || midiaMensagem.audio;
+    if ((!texto && !temMidia) || !usuarioAtual || !contatoMensagemAtual) return;
 
-    const resp = await fetch('/api/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        fromId: usuarioAtual.id,
-        toId: contatoMensagemAtual,
-        texto
-      })
-    });
+    try {
+      const { resp, data } = await api('/api/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          toId: contatoMensagemAtual,
+          texto,
+          imagem: midiaMensagem.imagem,
+          video: midiaMensagem.video,
+          audio: midiaMensagem.audio
+        })
+      });
 
-    if (!resp.ok) {
-      const data = await resp.json().catch(() => ({}));
-      mostrarToast(data.error || 'Não foi possível enviar a mensagem.');
-      return;
+      if (!resp.ok) {
+        mostrarToast(data?.error || 'Não foi possível enviar a mensagem.');
+        return;
+      }
+
+      inputMensagem.value = '';
+      midiaMensagem = { imagem: null, video: null, audio: null };
+      inputMsgImagem.value = '';
+      inputMsgVideo.value = '';
+      inputMsgAudio.value = '';
+      // mensagem chega também via socket; se ainda não chegou, adiciona
+      if (data?.id && !mensagens.some((m) => m.id === data.id)) {
+        mensagens.push(data);
+        renderizarConversa();
+      }
+    } catch (err) {
+      mostrarToast(err.message || 'Erro ao enviar mensagem.');
     }
-
-    inputMensagem.value = '';
   });
+
+  // ---- Mídia nas mensagens ----
+  btnMsgImagem.addEventListener('click', () => inputMsgImagem.click());
+  btnMsgVideo.addEventListener('click', () => inputMsgVideo.click());
+  btnMsgAudio.addEventListener('click', () => inputMsgAudio.click());
+
+  inputMsgImagem.addEventListener('change', () => lerMidiaMensagem(inputMsgImagem, 'imagem', 5));
+  inputMsgVideo.addEventListener('change', () => lerMidiaMensagem(inputMsgVideo, 'video', 40));
+  inputMsgAudio.addEventListener('change', () => lerMidiaMensagem(inputMsgAudio, 'audio', 5));
+
+  // ---- Marcar pessoa (menção) ----
+  btnMencionar.addEventListener('click', () => {
+    abrirModalMencao();
+  });
+  btnFecharMencao.addEventListener('click', fecharModalMencao);
+  modalMencao.addEventListener('click', (e) => {
+    if (e.target === modalMencao) fecharModalMencao();
+  });
+  inputMencaoBusca.addEventListener('input', renderizarListaMencao);
+
+  // ---- Chamada de voz ----
+  callBtnMute.addEventListener('click', alternarMudoChamada);
+  callBtnEnd.addEventListener('click', encerrarChamada);
+  callBtnAceitar.addEventListener('click', aceitarChamada);
+  callBtnRecusar.addEventListener('click', recusarChamada);
 
   formCriarConta.addEventListener('submit', criarConta);
 
-  // Navegação entre as páginas internas (Início, Explorar, Perfil, Notificações)
   navItens.forEach((item) => {
     item.addEventListener('click', (e) => {
       e.preventDefault();
-
       if (item.dataset.pagina === 'perfil' && usuarioAtual) {
         perfilSelecionadoId = usuarioAtual.id;
       }
-
       irParaPagina(item.dataset.pagina);
     });
   });
 
-  // Delegação de evento: clique no avatar ou nome de qualquer post leva ao perfil daquele autor
   document.body.addEventListener('click', (e) => {
-    if (e.target.closest('[data-follow-id]')) {
-      return;
-    }
+    if (e.target.closest('[data-follow-id]')) return;
 
     const alvoPerfil = e.target.closest('[data-open-profile]');
     if (alvoPerfil) {
@@ -772,34 +1171,51 @@ function configurarEventos() {
       perfilSelecionadoId = String(alvo.dataset.user);
       abrirPerfil(perfilSelecionadoId);
       irParaPagina('perfil');
+      return;
+    }
+
+    // Clique numa menção (@handle) abre o perfil do usuário
+    const mencao = e.target.closest('.mencao-link');
+    if (mencao && mencao.dataset.mencao) {
+      const usuario = todosUsuarios.find((u) => u.handle.toLowerCase() === mencao.dataset.mencao.toLowerCase());
+      if (usuario) {
+        perfilSelecionadoId = usuario.id;
+        abrirPerfil(usuario.id);
+        irParaPagina('perfil');
+      }
     }
   });
 
-  // Busca em tempo real na página Explorar (filtra o cache local de posts)
   inputBusca.addEventListener('input', () => {
     renderizarBusca(inputBusca.value.trim().toLowerCase());
   });
 
-  window.addEventListener('resize', () => {
-    verificarDispositivo();
-  });
+  window.addEventListener('resize', verificarDispositivo);
 
-  // Scroll infinito simulado: quando chegar perto do fim da página, revela mais posts do cache
   window.addEventListener('scroll', () => {
-    if (!usuarioAtual) return;
+    if (!usuarioAtual || paginaAtual !== 'inicio') return;
     const pertoDoFim = window.innerHeight + window.scrollY >= document.body.offsetHeight - 300;
     if (pertoDoFim && postsExibidos < posts.length) {
       carregandoMaisEl.classList.remove('hidden');
       setTimeout(() => {
         postsExibidos += 10;
         renderizarFeed();
-      }, 500); // pequeno delay simulando carregamento
+      }, 300);
     }
   });
 }
 
+function atualizarEstadoCompositor() {
+  const restante = 280 - inputPost.value.length;
+  contadorCaracteres.textContent = restante;
+  contadorCaracteres.classList.toggle('limite', restante <= 20);
+  const temTexto = inputPost.value.trim().length > 0;
+  const temMidia = Boolean(imagemSelecionada || videoSelecionado);
+  btnPostar.disabled = (!temTexto && !temMidia) || restante < 0;
+}
+
 // ============================================================
-// CRIAÇÃO DE CONTA
+// CADASTRO
 // ============================================================
 function fecharModalCadastro() {
   modalCriarConta.classList.add('hidden');
@@ -813,51 +1229,45 @@ async function criarConta(e) {
     name: inputNomeCadastro.value.trim(),
     handle: inputHandleCadastro.value.trim(),
     bio: inputBioCadastro.value.trim(),
-    password: inputSenhaCadastro.value.trim()
+    password: inputSenhaCadastro.value
   };
 
   if (!payload.name || payload.name.length < 2) {
     alert('Informe um nome com pelo menos 2 caracteres.');
     return;
   }
-
-  if (!payload.handle || payload.handle.length < 2) {
+  if (!payload.handle || payload.handle.replace(/^@/, '').length < 2) {
     alert('Informe um @handle válido.');
     return;
   }
-
   if (payload.password.length < 6) {
     alert('A senha deve ter pelo menos 6 caracteres.');
     return;
   }
-
-  if (payload.password !== inputConfirmarSenhaCadastro.value.trim()) {
+  if (payload.password !== inputConfirmarSenhaCadastro.value) {
     alert('As senhas informadas não conferem.');
     return;
   }
 
-  const resp = await fetch('/api/users', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
+  try {
+    const { resp, data } = await api('/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
 
-  const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      alert(data?.error || 'Não foi possível criar a conta.');
+      return;
+    }
 
-  if (!resp.ok) {
-    alert(data.error || 'Não foi possível criar a conta.');
-    return;
+    await carregarUsuarios();
+    await entrarComoUsuario(data.user, data.token);
+    fecharModalCadastro();
+    mostrarToast('Conta criada com sucesso!');
+  } catch (err) {
+    alert(err.message || 'Erro ao criar conta.');
   }
-
-  await carregarUsuarios();
-
-  const novoUsuario = todosUsuarios.find((u) => u.id === data.id);
-  if (novoUsuario) {
-    entrarComoUsuario(novoUsuario);
-  }
-
-  fecharModalCadastro();
-  mostrarToast('Conta criada com sucesso!');
 }
 
 function mostrarErroLogin(mensagem) {
@@ -871,7 +1281,7 @@ function limparErroLogin() {
 }
 
 // ============================================================
-// TEMA (DARK MODE) - persistido em localStorage
+// TEMA
 // ============================================================
 function aplicarTemaSalvo() {
   const tema = localStorage.getItem('tadashi_tema');
@@ -888,12 +1298,12 @@ function alternarTema() {
 }
 
 // ============================================================
-// SUGESTÕES DE USUÁRIOS (coluna direita)
+// SUGESTÕES
 // ============================================================
 function renderizarSugestoes() {
   if (!usuarioAtual) return;
 
-  const meuUsuario = todosUsuarios.find((u) => u.id === usuarioAtual.id);
+  const meuUsuario = todosUsuarios.find((u) => u.id === usuarioAtual.id) || usuarioAtual;
   const outros = todosUsuarios.filter((u) => u.id !== usuarioAtual.id).slice(0, 3);
 
   sugestoesUsuariosEl.innerHTML = outros.map((u) => {
@@ -901,21 +1311,21 @@ function renderizarSugestoes() {
     return `
       <div class="sugestao-usuario">
         <div class="sugestao-usuario-info">
-          <img class="avatar avatar-sm" src="${u.avatar}" alt="${u.name}">
+          <img class="avatar avatar-sm post-avatar-link" data-user="${escaparAttr(u.id)}" src="${escaparAttr(u.avatar)}" alt="${escaparAttr(u.name)}">
           <div>
-            <div style="font-weight:700; font-size:14px;">${escaparHtml(u.name)}</div>
+            <div style="font-weight:700; font-size:14px;" class="post-avatar-link" data-user="${escaparAttr(u.id)}">${escaparHtml(u.name)}</div>
             <div style="color:var(--texto-secundario); font-size:13px;">${escaparHtml(u.handle)}</div>
           </div>
         </div>
-        <button class="btn-seguir ${jaSegue ? 'seguindo' : ''}" data-follow-id="${u.id}">${jaSegue ? 'Deixar de seguir' : 'Seguir'}</button>
+        <button type="button" class="btn-seguir ${jaSegue ? 'seguindo' : ''}" data-follow-id="${escaparAttr(u.id)}">${jaSegue ? 'Deixar de seguir' : 'Seguir'}</button>
       </div>
     `;
   }).join('');
 
   sugestoesUsuariosEl.querySelectorAll('[data-follow-id]').forEach((botao) => {
     botao.addEventListener('click', () => {
-      const alvoId = botao.dataset.followId;
-      socket.emit('seguir', { userId: usuarioAtual.id, alvoId });
+      if (!socket) return;
+      socket.emit('seguir', { alvoId: botao.dataset.followId });
     });
   });
 }
@@ -925,65 +1335,179 @@ function verificarDispositivo() {
   const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
   const mobileAgent = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
   mobile = width <= 680 || coarsePointer || mobileAgent;
-
   document.body.classList.toggle('mobile-view', mobile);
-
-  if (mobile) {
-    btnSair.classList.add('hidden');
-  } else {
-    btnSair.classList.remove('hidden');
-  }
+  if (mobile) btnSair.classList.add('hidden');
+  else btnSair.classList.remove('hidden');
 }
 
 // ============================================================
-// TOASTS DE NOTIFICAÇÃO
+// PAINEL ADMIN
 // ============================================================
+function templateReportAdmin(r) {
+  const targetUser = todosUsuarios.find((u) => u.id === r.targetUserId) || {};
+  const reporter = r.deUserId !== 'sistema'
+    ? (todosUsuarios.find((u) => u.id === r.deUserId) || {})
+    : { name: 'Sistema', handle: 'automático' };
+  const badgeClass = r.tipo === 'ofensivo' ? 'badge-automat' : 'badge-manual';
+  const badgeText = r.tipo === 'ofensivo' ? '🚨 Auto' : '🚩 Manual';
+
+  return `
+    <div class="report-item" data-report-id="${escaparAttr(r.id)}">
+      <div class="report-header">
+        <span class="report-badge ${badgeClass}">${badgeText}</span>
+        <span class="report-status ${r.resolvido ? 'resolvido' : 'pendente'}">${r.resolvido ? 'Resolvido' : 'Pendente'}</span>
+      </div>
+      <div class="report-motivo"><strong>Motivo:</strong> ${escaparHtml(r.motivo)}</div>
+      <div class="report-info"><strong>Alvo:</strong> ${escaparHtml(targetUser.name || 'N/A')} ${escaparHtml(targetUser.handle || '')} ${targetUser.banned ? '🔴 BANIDO' : ''}</div>
+      <div class="report-info"><strong>Reportado por:</strong> ${escaparHtml(reporter.name || 'N/A')}</div>
+      ${!r.resolvido ? `
+      <div class="report-acoes">
+        <button class="btn btn-ban-report" data-user="${escaparAttr(r.targetUserId)}" data-report="${escaparAttr(r.id)}">Banir usuário</button>
+        <button class="btn btn-resolver" data-report="${escaparAttr(r.id)}">Marcar resolvido</button>
+      </div>` : ''}
+    </div>
+  `;
+}
+
+function templateAdminUser(u) {
+  const status = u.banned ? '🔴 Banido' : '🟢 Ativo';
+  return `
+    <div class="admin-user-item" data-user="${escaparAttr(u.id)}">
+      <img class="avatar avatar-sm" src="${escaparAttr(u.avatar)}" alt="avatar">
+      <div class="admin-user-info">
+        <strong>${escaparHtml(u.name)}</strong>
+        <span>${escaparHtml(u.handle)}</span>
+        <small>Strikes: ${u.strikes || 0}/${MAX_STRIKES} | Role: ${u.role}</small>
+      </div>
+      <span class="user-status ${u.banned ? 'banido' : 'ativo'}">${status}</span>
+      ${u.role !== 'admin' ? (u.banned
+        ? `<button class="btn btn-unban-user" data-userid="${escaparAttr(u.id)}">Desbanir</button>`
+        : `<button class="btn btn-ban-user" data-userid="${escaparAttr(u.id)}">Banir</button>`
+      ) : '<span>👑 Admin</span>'}
+    </div>
+  `;
+}
+
+// ============================================================
+// TOASTS
+// ============================================================
+
+// ============================================================
+// FUNÇÕES DO PAINEL ADMIN
+// ============================================================
+async function carregarAdminPanel() {
+  await Promise.all([
+    carregarReportsAdmin(),
+    carregarUsuariosAdmin()
+  ]);
+  if (!tabPosts.classList.contains('hidden')) renderizarAdminPosts();
+}
+
+async function carregarReportsAdmin() {
+  const { resp, data } = await api('/api/admin/reports');
+  if (!resp.ok) return;
+  const reports = Array.isArray(data) ? data : [];
+  listaReports.innerHTML = reports.length
+    ? reports.map(templateReportAdmin).join('')
+    : '<div class="admin-lista-vazia">Nenhum reporte pendente.</div>';
+
+  listaReports.querySelectorAll('.btn-ban-report').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const alvoId = btn.dataset.user;
+      const motivo = prompt('Motivo do banimento:') || 'Violação das regras';
+      if (!motivo.trim()) return;
+      const { resp } = await api(`/api/admin/users/${alvoId}/ban`, {
+        method: 'POST', body: JSON.stringify({ motivo })
+      });
+      if (resp.ok) { mostrarToast('Usuário banido.'); carregarReportsAdmin(); carregarUsuariosAdmin(); }
+    });
+  });
+  listaReports.querySelectorAll('.btn-resolver').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const reportId = btn.dataset.report;
+      const { resp } = await api(`/api/admin/reports/${reportId}/responder`, {
+        method: 'POST', body: JSON.stringify({ resolver: true })
+      });
+      if (resp.ok) { mostrarToast('Reporte resolvido.'); carregarReportsAdmin(); }
+    });
+  });
+}
+
+async function carregarUsuariosAdmin() {
+  const { resp, data } = await api('/api/admin/users');
+  if (!resp.ok) return;
+  const usuarios = Array.isArray(data) ? data : [];
+  listaAdminUsers.innerHTML = usuarios.length
+    ? usuarios.map(templateAdminUser).join('')
+    : '<div class="admin-lista-vazia">Nenhum usuário encontrado.</div>';
+
+  listaAdminUsers.querySelectorAll('.btn-ban-user').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const alvoId = btn.dataset.userid;
+      const motivo = prompt('Motivo do banimento:') || 'Violação das regras';
+      if (!motivo.trim()) return;
+      const { resp } = await api(`/api/admin/users/${alvoId}/ban`, {
+        method: 'POST', body: JSON.stringify({ motivo })
+      });
+      if (resp.ok) { mostrarToast('Usuário banido.'); carregarUsuariosAdmin(); }
+    });
+  });
+  listaAdminUsers.querySelectorAll('.btn-unban-user').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const alvoId = btn.dataset.userid;
+      const { resp } = await api(`/api/admin/users/${alvoId}/unban`, { method: 'POST' });
+      if (resp.ok) { mostrarToast('Usuário desbanido.'); carregarUsuariosAdmin(); }
+    });
+  });
+}
+
+function renderizarAdminPosts() {
+  listaAdminPosts.innerHTML = posts.length
+    ? posts.map(templatePost).join('')
+    : '<div class="admin-lista-vazia">Nenhum post encontrado.</div>';
+  ligarEventosDosPostsEm(listaAdminPosts);
+}
 function mostrarToast(mensagem) {
   const toast = document.createElement('div');
   toast.className = 'toast';
   toast.textContent = mensagem;
   toastContainer.appendChild(toast);
-
-  // remove o elemento do DOM depois que a animação de saída terminar (~3s)
   setTimeout(() => toast.remove(), 3000);
 }
 
 // ============================================================
-// NAVEGAÇÃO ENTRE PÁGINAS (Início / Explorar / Perfil / Notificações)
+// NAVEGAÇÃO
 // ============================================================
 function irParaPagina(nome) {
   paginaAtual = nome;
-
-  // mostra apenas a página escolhida
   Object.entries(paginas).forEach(([chave, el]) => el.classList.toggle('hidden', chave !== nome));
-
-  // marca o item ativo na sidebar
   navItens.forEach((item) => item.classList.toggle('nav-ativo', item.dataset.pagina === nome));
 
   if (nome === 'perfil') {
-    const perfilAOpen = perfilSelecionadoId || usuarioAtual?.id;
-    if (perfilAOpen) abrirPerfil(perfilAOpen);
+    const id = perfilSelecionadoId || usuarioAtual?.id;
+    if (id) abrirPerfil(id);
   }
-
   if (nome === 'videos') renderizarVideos();
   if (nome === 'explorar') renderizarBusca(inputBusca.value.trim().toLowerCase());
-  if (nome === 'mensagens' && usuarioAtual) {
-    carregarMensagens();
-  }
-  if (nome === 'notificacoes') {
-    notificacoes.forEach((n) => (n.lida = true));
-    atualizarBadgeNotificacoes();
-    renderizarNotificacoes();
-  }
+    if (nome === 'mensagens' && usuarioAtual) carregarMensagens();
+  if (nome === 'notificacoes') marcarNotificacoesLidas();
+  if (nome === 'admin' && usuarioAtual && usuarioAtual.role === 'admin') carregarAdminPanel();
 }
 
 // ============================================================
-// PÁGINA: PERFIL (dados do usuário + posts dele)
+// PERFIL
 // ============================================================
 async function abrirPerfil(userId) {
-  const usuario = todosUsuarios.find((u) => u.id === userId);
+  if (!usuarioAtual) return;
+
+  let usuario = todosUsuarios.find((u) => u.id === userId);
+  if (!usuario) {
+    await carregarUsuarios();
+    usuario = todosUsuarios.find((u) => u.id === userId);
+  }
   if (!usuario) return;
 
+  perfilSelecionadoId = usuario.id;
   perfilAvatar.src = usuario.avatar;
   perfilAvatar.dataset.userId = usuario.id;
   perfilNome.textContent = usuario.name;
@@ -994,8 +1518,11 @@ async function abrirPerfil(userId) {
   const seguidores = todosUsuarios.filter((u) => (u.following || []).includes(usuario.id)).length;
   perfilSeguidores.textContent = seguidores;
 
-  const resp = await fetch(`/api/posts/usuario/${userId}`);
-  const postsDoPerfil = await resp.json();
+  // botão mudar avatar só no próprio perfil
+  btnMudarAvatar.classList.toggle('hidden', usuario.id !== usuarioAtual.id);
+
+  const { resp, data } = await api(`/api/posts/usuario/${userId}`);
+  const postsDoPerfil = resp.ok && Array.isArray(data) ? data : [];
   perfilPostsQtd.textContent = postsDoPerfil.length;
 
   listaPostsPerfilEl.innerHTML = postsDoPerfil.length
@@ -1004,43 +1531,41 @@ async function abrirPerfil(userId) {
 
   ligarEventosDosPostsEm(listaPostsPerfilEl);
 
-  // se estamos vendo o perfil de outra pessoa, mostra o botão de Seguir dentro do cabeçalho
   const botaoExistente = document.getElementById('btn-seguir-perfil');
   if (botaoExistente) botaoExistente.remove();
 
   if (usuario.id !== usuarioAtual.id) {
-    const meuUsuario = todosUsuarios.find((u) => u.id === usuarioAtual.id);
+    const meuUsuario = todosUsuarios.find((u) => u.id === usuarioAtual.id) || usuarioAtual;
     const jaSegue = (meuUsuario.following || []).includes(usuario.id);
 
     const btn = document.createElement('button');
     btn.id = 'btn-seguir-perfil';
-    btn.className = 'btn-seguir';
+    btn.type = 'button';
+    btn.className = `btn-seguir ${jaSegue ? 'seguindo' : ''}`;
     btn.style.marginTop = '10px';
     btn.textContent = jaSegue ? 'Deixar de seguir' : 'Seguir';
     btn.addEventListener('click', () => {
-      socket.emit('seguir', { userId: usuarioAtual.id, alvoId: usuario.id });
+      if (!socket) return;
+      socket.emit('seguir', { alvoId: usuario.id });
     });
     document.querySelector('.cabecalho-perfil').appendChild(btn);
   }
 }
 
 // ============================================================
-// PÁGINA: VÍDEOS (feed só com postagens com vídeo)
+// VÍDEOS
 // ============================================================
 function renderizarVideos() {
   if (!usuarioAtual) return;
-
   const videos = posts.filter((p) => Boolean(p.video));
-
   listaVideosEl.innerHTML = videos.length
     ? videos.map((p) => templatePost(p)).join('')
     : '<div class="notificacao-vazia">Ainda não há vídeos publicados.</div>';
-
   ligarEventosDosPostsEm(listaVideosEl);
 }
 
 // ============================================================
-// PÁGINA: EXPLORAR (busca por texto, nome ou @handle)
+// EXPLORAR
 // ============================================================
 function renderizarBusca(termo) {
   if (!termo) {
@@ -1056,11 +1581,11 @@ function renderizarBusca(termo) {
     (p.authorHandle || '').toLowerCase().includes(busca)
   );
 
-  const resultadosUsuarios = todosUsuarios.filter((u) => {
-    return (u.name || '').toLowerCase().includes(busca) ||
-      (u.handle || '').toLowerCase().includes(busca) ||
-      (u.bio || '').toLowerCase().includes(busca);
-  });
+  const resultadosUsuarios = todosUsuarios.filter((u) =>
+    (u.name || '').toLowerCase().includes(busca) ||
+    (u.handle || '').toLowerCase().includes(busca) ||
+    (u.bio || '').toLowerCase().includes(busca)
+  );
 
   const htmlUsuarios = resultadosUsuarios.length
     ? `<section class="resultados-pessoas">
@@ -1077,7 +1602,6 @@ function renderizarBusca(termo) {
     : '';
 
   const existeResultado = resultadosPosts.length || resultadosUsuarios.length;
-
   listaBuscaEl.innerHTML = existeResultado
     ? `${htmlUsuarios}${htmlPosts}`
     : '<div class="notificacao-vazia">Nenhum resultado encontrado.</div>';
@@ -1085,55 +1609,362 @@ function renderizarBusca(termo) {
   ligarEventosDosPostsEm(listaBuscaEl);
 
   listaBuscaEl.querySelectorAll('[data-follow-id]').forEach((botao) => {
-    botao.addEventListener('click', () => {
-      const alvoId = botao.dataset.followId;
-      if (!usuarioAtual) return;
-      socket.emit('seguir', { userId: usuarioAtual.id, alvoId });
+    botao.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!socket || !usuarioAtual) return;
+      socket.emit('seguir', { alvoId: botao.dataset.followId });
     });
   });
 }
 
 function templateUsuarioBusca(u) {
   if (!usuarioAtual) return '';
-
-  const meuUsuario = todosUsuarios.find((x) => x.id === usuarioAtual.id);
+  const meuUsuario = todosUsuarios.find((x) => x.id === usuarioAtual.id) || usuarioAtual;
   const jaSegue = (meuUsuario?.following || []).includes(u.id);
+  const souEu = u.id === usuarioAtual.id;
 
-  return `<article class="resultado-pessoa" data-open-profile="${u.id}">
+  return `<article class="resultado-pessoa" data-open-profile="${escaparAttr(u.id)}">
     <div class="resultado-pessoa-topo">
-      <img class="avatar avatar-sm" src="${u.avatar}" alt="${escaparHtml(u.name)}" data-open-profile="${u.id}">
-      <div class="resultado-pessoa-texto" data-open-profile="${u.id}">
+      <img class="avatar avatar-sm" src="${escaparAttr(u.avatar)}" alt="${escaparAttr(u.name)}" data-open-profile="${escaparAttr(u.id)}">
+      <div class="resultado-pessoa-texto" data-open-profile="${escaparAttr(u.id)}">
         <div class="resultado-pessoa-nome">${escaparHtml(u.name)}</div>
         <div class="resultado-pessoa-handle">${escaparHtml(u.handle)}</div>
       </div>
-      <button type="button" class="btn-seguir ${jaSegue ? 'seguindo' : ''}" data-follow-id="${u.id}">${jaSegue ? 'Deixar de seguir' : 'Seguir'}</button>
+      ${souEu ? '' : `<button type="button" class="btn-seguir ${jaSegue ? 'seguindo' : ''}" data-follow-id="${escaparAttr(u.id)}">${jaSegue ? 'Deixar de seguir' : 'Seguir'}</button>`}
     </div>
-    <div class="resultado-pessoa-bio" data-open-profile="${u.id}">${escaparHtml(u.bio || 'Novo membro do Tadashi.')}</div>
+    <div class="resultado-pessoa-bio" data-open-profile="${escaparAttr(u.id)}">${escaparHtml(u.bio || 'Novo membro do Tadashi.')}</div>
   </article>`;
 }
 
 // ============================================================
-// PÁGINA: NOTIFICAÇÕES
+// NOTIFICAÇÕES
 // ============================================================
+async function carregarNotificacoes() {
+  if (!usuarioAtual || !authToken) return;
+  try {
+    const { resp, data } = await api('/api/notifications');
+    if (!resp.ok) {
+      notificacoes = [];
+      atualizarBadgeNotificacoes();
+      return;
+    }
+    notificacoes = (Array.isArray(data) ? data : []).map((n) => ({
+      id: n.id,
+      mensagem: n.mensagem,
+      createdAt: n.createdAt,
+      lida: Boolean(n.lida),
+      tipo: n.tipo
+    }));
+    atualizarBadgeNotificacoes();
+    if (paginaAtual === 'notificacoes') renderizarNotificacoes();
+  } catch {
+    notificacoes = [];
+  }
+}
+
+async function marcarNotificacoesLidas() {
+  notificacoes.forEach((n) => { n.lida = true; });
+  atualizarBadgeNotificacoes();
+  renderizarNotificacoes();
+  try {
+    await api('/api/notifications/read', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+  } catch {
+    // silencioso
+  }
+}
+
 function renderizarNotificacoes() {
   listaNotificacoesEl.innerHTML = notificacoes.length
     ? notificacoes.map((n) => `
-        <div class="notificacao-item">🔔 <span>${escaparHtml(n.mensagem)} · ${tempoRelativo(n.createdAt)}</span></div>
+        <div class="notificacao-item ${n.lida ? '' : 'nao-lida'}">🔔 <span>${escaparHtml(n.mensagem)} · ${tempoRelativo(n.createdAt)}</span></div>
       `).join('')
     : '<div class="notificacao-vazia">Nenhuma notificação ainda.</div>';
 }
 
 function atualizarBadgeNotificacoes() {
   const naoLidas = notificacoes.filter((n) => !n.lida).length;
-  badgeNotif.textContent = naoLidas;
+  badgeNotif.textContent = naoLidas > 99 ? '99+' : String(naoLidas);
   badgeNotif.classList.toggle('hidden', naoLidas === 0);
 }
 
 // ============================================================
-// FUNÇÕES UTILITÁRIAS
+// UTILS
 // ============================================================
+// ============================================================
+// MÍDIA NAS MENSAGENS
+// ============================================================
+function lerMidiaMensagem(input, tipo, limiteMb) {
+  const arquivo = input.files[0];
+  if (!arquivo) return;
 
-// Converte um timestamp em texto relativo tipo "há 5 min", "há 2h", "há 3 dias"
+  const prefixo = tipo === 'imagem' ? 'image' : (tipo === 'video' ? 'video' : 'audio');
+  if (!arquivo.type.startsWith(prefixo + '/')) {
+    mostrarToast(`Selecione um arquivo de ${tipo}.`);
+    input.value = '';
+    return;
+  }
+  if (arquivo.size > limiteMb * 1024 * 1024) {
+    mostrarToast(`${tipo === 'imagem' ? 'Imagem' : (tipo === 'video' ? 'Vídeo' : 'Áudio')} muito grande (máx. ${limiteMb} MB).`);
+    input.value = '';
+    return;
+  }
+
+  const leitor = new FileReader();
+  leitor.onload = () => {
+    midiaMensagem[tipo] = leitor.result;
+    mostrarToast(`📎 ${tipo === 'imagem' ? 'Foto' : (tipo === 'video' ? 'Vídeo' : 'Áudio')} anexada(o). É só enviar.`);
+    inputMensagem.focus();
+  };
+  leitor.readAsDataURL(arquivo);
+}
+
+// ============================================================
+// MARCAR PESSOA (MENÇÃO)
+// ============================================================
+function abrirModalMencao() {
+  if (!usuarioAtual) return;
+  inputMencaoBusca.value = '';
+  renderizarListaMencao();
+  modalMencao.classList.remove('hidden');
+  inputMencaoBusca.focus();
+}
+
+function fecharModalMencao() {
+  modalMencao.classList.add('hidden');
+}
+
+function renderizarListaMencao() {
+  if (!usuarioAtual) return;
+  const busca = inputMencaoBusca.value.trim().toLowerCase();
+  const usuarios = todosUsuarios
+    .filter((u) => u.id !== usuarioAtual.id)
+    .filter((u) => !busca || u.name.toLowerCase().includes(busca) || u.handle.toLowerCase().includes(busca));
+
+  if (!usuarios.length) {
+    listaMencao.innerHTML = '<div class="notificacao-vazia">Nenhum usuário encontrado.</div>';
+    return;
+  }
+
+  listaMencao.innerHTML = usuarios.map((u) => `
+    <button type="button" class="mencao-item" data-mencao-id="${u.id}">
+      <img class="avatar avatar-sm" src="${escaparAttr(u.avatar)}" alt="">
+      <div>
+        <div class="mencao-nome">${escaparHtml(u.name)}</div>
+        <div class="mencao-handle">${escaparHtml(u.handle)}</div>
+      </div>
+    </button>
+  `).join('');
+
+  listaMencao.querySelectorAll('[data-mencao-id]').forEach((botao) => {
+    botao.addEventListener('click', () => {
+      const u = todosUsuarios.find((x) => x.id === botao.dataset.mencaoId);
+      if (!u) return;
+      const atual = inputPost.value;
+      inputPost.value += (atual && !/ $/.test(atual) ? ' ' : '') + u.handle + ' ';
+      fecharModalMencao();
+      inputPost.focus();
+      atualizarEstadoCompositor();
+    });
+  });
+}
+
+// ============================================================
+// CHAMADA DE VOZ (WebRTC com sinalização via Socket.io)
+// ============================================================
+let callRemoteAudioEl = null;
+
+async function iniciarChamadaVoz(contatoId) {
+  if (!socket || !usuarioAtual) return;
+  if (chamadaAtiva) {
+    mostrarToast('Já existe uma chamada em andamento.');
+    return;
+  }
+  const contato = todosUsuarios.find((u) => u.id === contatoId);
+  if (!contato) return;
+
+  streamLocal = null;
+  try {
+    streamLocal = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    mostrarToast('Permissão de microfone negada.');
+    return;
+  }
+
+  callDirecao = 'out';
+  callContatoId = contatoId;
+  chamadaAtiva = true;
+  callAvatar.src = contato.avatar;
+  callInfoEl.textContent = `${contato.name} (@${contato.handle.replace(/^@/, '')})`;
+  callStatusEl.textContent = 'Chamando...';
+  callBtnRecusar.classList.add('hidden');
+  callBtnAceitar.classList.add('hidden');
+  callBtnMute.classList.remove('hidden');
+  callBtnEnd.classList.remove('hidden');
+  callOverlay.classList.remove('hidden');
+
+  try {
+    await criarPeerVoz(contatoId, 'out');
+    socket.emit('chamarVoz', { toId: contatoId });
+  } catch (err) {
+    console.warn(err);
+    mostrarToast('Não foi possível iniciar a chamada.');
+    pararChamadaVoz();
+  }
+}
+
+async function criarPeerVoz(contatoId, direcao) {
+  await pararRecursosPeerAtuais();
+  const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+  peer = new RTCPeerConnection(config);
+
+  if (streamLocal && streamLocal.getAudioTracks().length) {
+    streamLocal.getAudioTracks().forEach((t) => peer.addTrack(t, streamLocal));
+  }
+
+  if (!callRemoteAudioEl) {
+    callRemoteAudioEl = new Audio();
+    callRemoteAudioEl.autoplay = true;
+  }
+
+  peer.ontrack = (evento) => {
+    if (evento.streams && evento.streams[0]) {
+      callRemoteAudioEl.srcObject = evento.streams[0];
+      callRemoteAudioEl.play().catch(() => {});
+    }
+  };
+
+  peer.onicecandidate = (evento) => {
+    if (evento.candidate && socket && callContatoId) {
+      socket.emit('sinalVoz', {
+        toId: callContatoId,
+        fromId: usuarioAtual.id,
+        descricao: null,
+        candidato: evento.candidate
+      });
+    }
+  };
+
+  peer.onconnectionstatechange = () => {
+    if (peer && ['failed', 'closed', 'disconnected'].includes(peer.connectionState)) {
+      pararChamadaVoz();
+    }
+  };
+
+  // Quem está ligando cria a oferta; quem atende aguarda receber
+  if (direcao === 'out') {
+    const oferta = await peer.createOffer();
+    await peer.setLocalDescription(oferta);
+    socket.emit('sinalVoz', {
+      toId: callContatoId,
+      fromId: usuarioAtual.id,
+      descricao: peer.localDescription,
+      candidato: null
+    });
+  }
+
+  return peer;
+}
+
+async function aceitarChamada() {
+  if (!chamadaAtiva || callDirecao !== 'in' || !callContatoId) return;
+  callStatusEl.textContent = 'Conectando...';
+  callBtnRecusar.classList.add('hidden');
+  callBtnAceitar.classList.add('hidden');
+  callBtnMute.classList.remove('hidden');
+  callBtnEnd.classList.remove('hidden');
+
+  try {
+    streamLocal = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    mostrarToast('Permissão de microfone negada.');
+    return;
+  }
+
+  try {
+    await criarPeerVoz(callContatoId, 'in');
+    socket.emit('chamadaVozResposta', { toId: callContatoId, aceita: true, callId: callIdAtual });
+    // Aplica os sinais (offer/ICE) que chegaram enquanto aguardava a aceitação
+    const pendentes = sinalPendenteIn;
+    sinalPendenteIn = [];
+    for (const sinal of pendentes) {
+      try {
+        if (sinal.descricao) {
+          await peer.setRemoteDescription(sinal.descricao);
+          if (sinal.descricao.type === 'offer') {
+            const resposta = await peer.createAnswer();
+            await peer.setLocalDescription(resposta);
+            socket.emit('sinalVoz', {
+              toId: callContatoId,
+              fromId: usuarioAtual.id,
+              descricao: peer.localDescription,
+              candidato: null
+            });
+          }
+        }
+        if (sinal.candidato) await peer.addIceCandidate(sinal.candidato);
+      } catch (err) { /* ignora */ }
+    }
+  } catch (err) {
+    console.warn(err);
+    mostrarToast('Não foi possível aceitar a chamada.');
+    pararChamadaVoz();
+  }
+}
+
+function recusarChamada() {
+  if (callContatoId) {
+    socket.emit('chamadaVozResposta', { toId: callContatoId, aceita: false, callId: callIdAtual });
+  }
+  pararChamadaVoz();
+}
+
+function encerrarChamada() {
+  if (callContatoId) {
+    socket.emit('encerrarChamada', { toId: callContatoId });
+  }
+  pararChamadaVoz();
+}
+
+function alternarMudoChamada() {
+  if (!streamLocal) return;
+  callMudo = !callMudo;
+  streamLocal.getAudioTracks().forEach((t) => { t.enabled = !callMudo; });
+  callBtnMute.textContent = callMudo ? '🔇' : '🎙️';
+  callBtnMute.title = callMudo ? 'Ativar microfone' : 'Mutar';
+}
+
+async function pararRecursosPeerAtuais() {
+  if (peer) {
+    try { peer.close(); } catch (e) { /* ignora */ }
+    peer = null;
+  }
+  if (streamLocal) {
+    streamLocal.getTracks().forEach((t) => t.stop());
+    streamLocal = null;
+  }
+  callMudo = false;
+  callBtnMute.textContent = '🎙️';
+  callBtnMute.title = 'Mutar';
+}
+
+function pararChamadaVoz() {
+  pararRecursosPeerAtuais();
+  chamadaAtiva = false;
+  callDirecao = null;
+  callIdAtual = null;
+  callContatoId = null;
+  sinalPendenteIn = [];
+  callOverlay.classList.add('hidden');
+  callBtnRecusar.classList.add('hidden');
+  callBtnAceitar.classList.add('hidden');
+  callBtnMute.classList.add('hidden');
+  callBtnEnd.classList.add('hidden');
+}
+
 function tempoRelativo(timestamp) {
   const diffMs = Date.now() - timestamp;
   const seg = Math.floor(diffMs / 1000);
@@ -1144,18 +1975,25 @@ function tempoRelativo(timestamp) {
   if (h < 24) return `${h}h`;
   const dias = Math.floor(h / 24);
   if (dias < 7) return `${dias}d`;
-  const data = new Date(timestamp);
-  return data.toLocaleDateString('pt-BR');
+  return new Date(timestamp).toLocaleDateString('pt-BR');
 }
 
-// Escapa caracteres HTML para evitar injeção de código nos posts (segurança básica)
 function escaparHtml(texto) {
   const div = document.createElement('div');
-  div.textContent = texto;
+  div.textContent = texto == null ? '' : String(texto);
   return div.innerHTML;
 }
 
-// Atualiza o "tempo relativo" de todos os posts visíveis a cada 30s, sem precisar re-renderizar tudo
+function escaparAttr(texto) {
+  return String(texto == null ? '' : texto)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+
 setInterval(() => {
   if (!usuarioAtual) return;
   document.querySelectorAll('.post').forEach((el) => {

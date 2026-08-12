@@ -11,17 +11,25 @@ const low = require('lowdb');
 const FileSync = require('lowdb/adapters/FileSync');
 
 const dataDir = path.join(__dirname, 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
+const uploadsDir = path.join(__dirname, 'public', 'uploads');
+
+for (const dir of [dataDir, uploadsDir]) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
 const usersDb = low(new FileSync(path.join(dataDir, 'users.json')));
 const postsDb = low(new FileSync(path.join(dataDir, 'posts.json')));
 const messagesDb = low(new FileSync(path.join(dataDir, 'messages.json')));
+const notificationsDb = low(new FileSync(path.join(dataDir, 'notifications.json')));
+const sessionsDb = low(new FileSync(path.join(dataDir, 'sessions.json')));
+const reportsDb = low(new FileSync(path.join(dataDir, 'reports.json')));
 
 usersDb.defaults({ users: [] }).write();
 postsDb.defaults({ posts: [] }).write();
 messagesDb.defaults({ messages: [] }).write();
+notificationsDb.defaults({ notifications: [] }).write();
+sessionsDb.defaults({ sessions: [] }).write();
+reportsDb.defaults({ reports: [] }).write();
 
 const PBKDF2_ITERATIONS = 100000;
 const PBKDF2_KEYLEN = 64;
@@ -39,13 +47,36 @@ if (usersDb.get('users').value().length === 0) {
 
   const usuarios = [
     {
+      id: 'u_seed_admin',
+      name: 'Admin',
+      handle: '@admin',
+      avatar: 'https://i.pravatar.cc/150?img=1',
+      bio: 'Administrador do Tadashi 🛡️',
+      following: [],
+      role: 'admin',
+            strikes: 0,
+      banned: false,
+      banReason: '',
+      bannedAt: 0,
+      bannedBy: '',
+      passwordHash: criarPasswordHash('admin123'),
+      createdAt: Date.now()
+    },
+    {
       id: 'u_seed_alice',
       name: 'Alice',
       handle: '@alice',
       avatar: 'https://i.pravatar.cc/150?img=69',
       bio: 'Olá! Sou a Alice 👋',
       following: [],
-      passwordHash: criarPasswordHash('alice123')
+      role: 'user',
+            strikes: 0,
+      banned: false,
+      banReason: '',
+      bannedAt: 0,
+      bannedBy: '',
+      passwordHash: criarPasswordHash('alice123'),
+      createdAt: Date.now()
     },
     {
       id: 'u_seed_bob',
@@ -54,7 +85,14 @@ if (usersDb.get('users').value().length === 0) {
       avatar: 'https://i.pravatar.cc/150?img=62',
       bio: 'Bob aqui! 🚀',
       following: [],
-      passwordHash: criarPasswordHash('bob123')
+      role: 'user',
+            strikes: 0,
+      banned: false,
+      banReason: '',
+      bannedAt: 0,
+      bannedBy: '',
+      passwordHash: criarPasswordHash('bob123'),
+      createdAt: Date.now()
     },
     {
       id: 'u_seed_arthur',
@@ -63,7 +101,14 @@ if (usersDb.get('users').value().length === 0) {
       avatar: 'https://i.pravatar.cc/150?img=46',
       bio: 'Sou legal 😎',
       following: [],
-      passwordHash: criarPasswordHash('arthur123')
+      role: 'user',
+            strikes: 0,
+      banned: false,
+      banReason: '',
+      bannedAt: 0,
+      bannedBy: '',
+      passwordHash: criarPasswordHash('arthur123'),
+      createdAt: Date.now()
     }
   ];
 
@@ -82,6 +127,7 @@ if (usersDb.get('users').value().length === 0) {
       video: null,
       createdAt: agora - 60000,
       likes: [],
+      comentarios: [],
       repostBy: null,
       originalId: null
     },
@@ -96,6 +142,7 @@ if (usersDb.get('users').value().length === 0) {
       video: null,
       createdAt: agora - 30000,
       likes: [],
+      comentarios: [],
       repostBy: null,
       originalId: null
     },
@@ -110,6 +157,7 @@ if (usersDb.get('users').value().length === 0) {
       video: null,
       createdAt: agora,
       likes: [],
+      comentarios: [],
       repostBy: null,
       originalId: null
     }
@@ -118,6 +166,7 @@ if (usersDb.get('users').value().length === 0) {
   postsDb.get('posts').push(...posts).write();
 
   console.log('✅ Dados iniciais criados!');
+  console.log('👤 Admin: @admin (senha: admin123)');
   console.log('👤 Usuários: @alice, @bob, @arthur (senha: nome + 123)');
 } else {
   console.log('ℹ️ Banco já possui dados, seed ignorado.');

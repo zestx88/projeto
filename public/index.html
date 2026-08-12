@@ -97,6 +97,7 @@
           <a href="#" class="nav-item" data-pagina="notificacoes">🔔 <span>Notificações</span> <span id="badge-notif" class="badge hidden">0</span></a>
           <a href="#" class="nav-item" data-pagina="mensagens">✉️ <span>Mensagens</span></a>
           <a href="#" class="nav-item" data-pagina="perfil">👤 <span>Perfil</span></a>
+          <a href="#" id="nav-admin" class="nav-item hidden" data-pagina="admin">🛡️ <span>Painel Admin</span></a>
         </nav>
         <button id="btn-sair" class="btn-sair">Sair</button>
       </aside>
@@ -124,6 +125,7 @@
                 <input type="file" id="input-arquivo-imagem" accept="image/*" class="hidden">
                 <button id="btn-add-video" class="btn-icone" title="Adicionar vídeo do dispositivo">🎬</button>
                 <input type="file" id="input-arquivo-video" accept="video/*" class="hidden">
+                <button id="btn-mencionar" class="btn-icone" type="button" title="Marcar pessoa (@)">@</button>
                 <span id="contador-caracteres" class="contador">280</span>
               </div>
               <button id="btn-postar" class="btn-postar" disabled>Postar</button>
@@ -193,10 +195,48 @@
               <div id="conversa-header" class="conversa-header"></div>
               <div id="lista-mensagens" class="lista-mensagens"></div>
               <form id="form-mensagem" class="form-mensagem">
+                <div class="form-mensagem-ferramentas">
+                  <button type="button" id="btn-msg-imagem" class="btn-icone" title="Enviar foto">🖼️</button>
+                  <input type="file" id="input-msg-imagem" accept="image/*" class="hidden">
+                  <button type="button" id="btn-msg-video" class="btn-icone" title="Enviar vídeo">🎬</button>
+                  <input type="file" id="input-msg-video" accept="video/*" class="hidden">
+                  <button type="button" id="btn-msg-audio" class="btn-icone" title="Enviar áudio">🎤</button>
+                  <input type="file" id="input-msg-audio" accept="audio/*" class="hidden">
+                </div>
                 <input type="text" id="input-mensagem" maxlength="280" placeholder="Escreva uma mensagem...">
                 <button type="submit">Enviar</button>
               </form>
             </section>
+          </section>
+        </div>
+
+        <!-- ===== PÁGINA: ADMIN ===== -->
+        <div id="pagina-admin" class="pagina hidden">
+          <div class="pagina-titulo">Painel Admin</div>
+          <section class="admin-ongs">
+            <div class="admin-aba-header">
+              <button id="btn-admin-reports" class="btn-admin-aba btn-admin-ativo">Reports</button>
+              <button id="btn-admin-users" class="btn-admin-aba">Usuários</button>
+              <button id="btn-admin-posts" class="btn-admin-aba">Posts</button>
+            </div>
+
+            <!-- Aba: Reports -->
+            <div id="admin-tabpanel-reports" class="admin-tabpanel">
+              <div class="admin-lista-vazia" id="lista-reports-vazia">Nenhum reporte pendente.</div>
+              <div id="lista-reports" class="lista-reports"></div>
+            </div>
+
+            <!-- Aba: Usuários -->
+            <div id="admin-tabpanel-users" class="admin-tabpanel hidden">
+              <div class="admin-lista-vazia" id="lista-usuarios-vazia">Nenhum usuário encontrado.</div>
+              <div id="lista-admin-users" class="lista-admin-users"></div>
+            </div>
+
+            <!-- Aba: Posts -->
+            <div id="admin-tabpanel-posts" class="admin-tabpanel hidden">
+              <div class="admin-lista-vazia" id="lista-posts-vazia">Nenhum post encontrado.</div>
+              <div id="lista-admin-posts" class="lista-posts"></div>
+            </div>
           </section>
         </div>
 
@@ -220,6 +260,33 @@
         </div>
       </aside>
 
+    </div>
+  </div>
+
+  <!-- ===================== MODAL: MARCAR PESSOA ===================== -->
+  <div id="modal-mencao" class="modal-criar-conta hidden">
+    <div class="modal-conteudo modal-mencao">
+      <div class="modal-topo">
+        <h2>Marcar uma pessoa</h2>
+        <button id="btn-fechar-mencao" class="btn-fechar-cadastro" aria-label="Fechar">×</button>
+      </div>
+      <input type="text" id="input-mencao-busca" class="input-busca" placeholder="Buscar por @handle ou nome">
+      <div id="lista-mencao" class="lista-mencao"></div>
+    </div>
+  </div>
+
+  <!-- ===================== CHAMADA DE VOZ ===================== -->
+  <div id="call-overlay" class="call-overlay hidden">
+    <div class="call-card">
+      <div class="call-avatar-wrap"><img id="call-avatar" class="avatar avatar-grande" src="" alt=""></div>
+      <div id="call-status" class="call-status">Chamando...</div>
+      <div id="call-info" class="call-info"></div>
+      <div class="call-acoes">
+        <button id="call-btn-recusar" class="call-btn call-btn-red hidden" title="Recusar">✖</button>
+        <button id="call-btn-mute" class="call-btn hidden" title="Mutar">🎙️</button>
+        <button id="call-btn-aceitar" class="call-btn call-btn-green hidden" title="Aceitar chamada">📞</button>
+        <button id="call-btn-end" class="call-btn call-btn-red hidden" title="Encerrar">📵</button>
+      </div>
     </div>
   </div>
 

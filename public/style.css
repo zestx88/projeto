@@ -319,8 +319,99 @@ img { max-width: 100%; display: block; }
 }
 
 /* ============================================================
-   LAYOUT GERAL (header + 3 colunas)
+   MÍDIA NAS MENSAGENS + MENÇÃO + CHAMADA DE VOZ
    ============================================================ */
+.conversa-header .conversa-info { flex: 1; }
+.conversa-header .btn-icone { margin-left: auto; }
+
+.form-mensagem-ferramentas {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.form-mensagem-ferramentas .btn-icone {
+  font-size: 15px;
+}
+
+.mensagem-bala { display: flex; flex-direction: column; gap: 6px; }
+.msg-midia {
+  max-width: 250px;
+  border-radius: 12px;
+  display: block;
+}
+.msg-img { cursor: zoom-in; }
+.msg-video, .msg-audio { width: 230px; }
+.msg-texto { white-space: pre-wrap; word-break: break-word; }
+
+.mencao-link {
+  color: var(--azul);
+  font-weight: 600;
+  cursor: pointer;
+}
+.mencao-link:hover { text-decoration: underline; }
+
+/* Modal de menção */
+.modal-mencao .modal-conteudo { text-align: left; }
+.input-busca { width: 100%; }
+.lista-mencao { margin-top: 14px; display: flex; flex-direction: column; max-height: 300px; overflow-y: auto; }
+.mencao-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--texto);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+.mencao-item:hover { background: var(--hover); }
+.mencao-nome { font-weight: 700; }
+.mencao-handle { color: var(--texto-secundario); font-size: 12px; }
+
+/* Overlay de chamada de voz */
+.call-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 200;
+}
+.call-card {
+  background: var(--bg);
+  color: var(--texto);
+  border: 1px solid var(--borda);
+  border-radius: 20px;
+  padding: 30px 24px;
+  width: min(92vw, 360px);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+.call-avatar-wrap .avatar-grande { width: 96px; height: 96px; border-radius: 50%; }
+.call-status { font-size: 18px; font-weight: 800; }
+.call-info { color: var(--texto-secundario); font-size: 14px; }
+.call-acoes { display: flex; gap: 18px; margin-top: 8px; }
+.call-btn {
+  width: 60px; height: 60px;
+  border-radius: 50%;
+  font-size: 24px;
+  background: var(--hover);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.12s ease;
+}
+.call-btn:hover { transform: scale(1.08); }
+.call-btn-red { background: #e0245e; color: #fff; }
+.call-btn-green { background: #1dbf73; color: #fff; }
 .header {
   position: sticky;
   top: 0;
@@ -537,7 +628,18 @@ img { max-width: 100%; display: block; }
   align-items: center;
   gap: 10px;
 }
+.notificacao-item.nao-lida {
+  background: var(--hover);
+  font-weight: 600;
+}
 .notificacao-vazia { padding: 40px 16px; text-align: center; color: var(--texto-secundario); }
+
+.btn-seguir.seguindo {
+  background: transparent;
+  color: var(--texto);
+  border: 1px solid var(--borda);
+}
+
 
 /* ============================================================
    FEED / COMPOSITOR / POSTS

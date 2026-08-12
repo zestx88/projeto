@@ -10,6 +10,10 @@ cert/
 # Dados locais (não devem ir para produção)
 data/
 
+# Uploads de mídia gerados em runtime
+public/uploads/*
+!public/uploads/.gitkeep
+
 # Logs
 *.log
 npm-debug.log*
@@ -17,3 +21,7 @@ npm-debug.log*
 # Sistema
 .DS_Store
 Thumbs.db
+
+# Env
+.env
+.env.*
