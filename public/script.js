@@ -19,8 +19,11 @@ let postsExibidos = 10;
 let paginaAtual = 'inicio';
 let notificacoes = [];
 let socketConfigurado = false;
+let todosUsuariosAdmin = [];
+let adminUserFiltro = '';
 
 const TOKEN_KEY = 'tadashi_token';
+const MAX_STRIKES = 3;
 
 // ---------- DOM ----------
 const telaLogin = document.getElementById('tela-login');
@@ -92,6 +95,16 @@ const tabPosts = document.getElementById('admin-tabpanel-posts');
 const listaReports = document.getElementById('lista-reports');
 const listaAdminUsers = document.getElementById('lista-admin-users');
 const listaAdminPosts = document.getElementById('lista-admin-posts');
+
+// ===== Painel admin: abas extras =====
+const btnAdminStats = document.getElementById('btn-admin-stats');
+const btnAdminAnuncio = document.getElementById('btn-admin-anuncio');
+const tabStats = document.getElementById('admin-tabpanel-stats');
+const tabAnuncio = document.getElementById('admin-tabpanel-anuncio');
+const adminStatsEl = document.getElementById('admin-stats');
+const adminBuscaUsuarios = document.getElementById('admin-busca-usuarios');
+const adminAnuncioTexto = document.getElementById('admin-anuncio-texto');
+const btnAdminAnuncioEnviar = document.getElementById('btn-admin-anuncio-enviar');
 
 const perfilAvatar = document.getElementById('perfil-avatar');
 const btnMudarAvatar = document.getElementById('btn-mudar-avatar');
@@ -287,7 +300,7 @@ async function entrarComoUsuario(usuario, token) {
 
   telaLogin.classList.add('hidden');
   appEl.classList.remove('hidden');
-  navAdmin.classList.toggle('hidden', usuario.role !== 'admin');
+  navAdmin.classList.toggle('hidden', !ehStaff(usuario));
   btnMudarAvatar.classList.remove('hidden');
 
   headerAvatar.src = usuario.avatar;
@@ -1200,6 +1213,20 @@ function configurarEventos() {
 
   window.addEventListener('resize', verificarDispositivo);
 
+  // ----- Painel admin: alternar abas -----
+  btnAdminStats.addEventListener('click', () => mudarAbaAdmin(btnAdminStats, tabStats));
+  btnAdminReports.addEventListener('click', () => mudarAbaAdmin(btnAdminReports, tabReports));
+  btnAdminUsers.addEventListener('click', () => mudarAbaAdmin(btnAdminUsers, tabUsers));
+  btnAdminPosts.addEventListener('click', () => mudarAbaAdmin(btnAdminPosts, tabPosts));
+  btnAdminAnuncio.addEventListener('click', () => mudarAbaAdmin(btnAdminAnuncio, tabAnuncio));
+
+  adminBuscaUsuarios.addEventListener('input', () => {
+    adminUserFiltro = adminBuscaUsuarios.value.trim().toLowerCase();
+    carregarUsuariosAdmin();
+  });
+
+  btnAdminAnuncioEnviar.addEventListener('click', enviarAnuncioGlobal);
+
   window.addEventListener('scroll', () => {
     if (!usuarioAtual || paginaAtual !== 'inicio') return;
     const pertoDoFim = window.innerHeight + window.scrollY >= document.body.offsetHeight - 300;
@@ -1377,22 +1404,43 @@ function templateReportAdmin(r) {
   `;
 }
 
+function ehStaff(u) {
+  return u && (u.role === 'admin' || u.role === 'moderador');
+}
+
 function templateAdminUser(u) {
   const status = u.banned ? '🔴 Banido' : '🟢 Ativo';
+  const ehAdmin = ehStaff(usuarioAtual) && usuarioAtual.role === 'admin';
+  const ehMod = ehStaff(usuarioAtual);
+  const rotuloCargo = u.role === 'admin' ? 'Admin' : (u.role === 'moderador' ? 'Moderador' : 'User');
+  const acoes = [];
+
+  if (ehMod && u.role !== 'admin') {
+    if (u.banned) acoes.push(`<button class="btn btn-sm btn-unban-user" data-userid="${escaparAttr(u.id)}">Desbanir</button>`);
+    else acoes.push(`<button class="btn btn-sm btn-ban-user" data-userid="${escaparAttr(u.id)}">Banir</button>`);
+    acoes.push(`<button class="btn btn-sm btn-strike-user" data-userid="${escaparAttr(u.id)}">+1 Strike</button>`);
+    if (u.strikes > 0) acoes.push(`<button class="btn btn-sm btn-remove-strike" data-userid="${escaparAttr(u.id)}">-1 Strike</button>`);
+  }
+  if (ehAdmin && u.role !== 'admin') {
+    acoes.push(`<button class="btn btn-sm btn-del-user btn-danger" data-userdel="${escaparAttr(u.id)}">🗑️ Excluir</button>`);
+    if (u.role === 'moderador') {
+      acoes.push(`<button class="btn btn-sm btn-role-user" data-userid="${escaparAttr(u.id)}" data-role="user">👇 Rebaixar</button>`);
+    } else {
+      acoes.push(`<button class="btn btn-sm btn-role-user" data-userid="${escaparAttr(u.id)}" data-role="moderador">🛡️ Mod</button>`);
+      acoes.push(`<button class="btn btn-sm btn-role-user" data-userid="${escaparAttr(u.id)}" data-role="admin">👑 Admin</button>`);
+    }
+  }
+
   return `
     <div class="admin-user-item" data-user="${escaparAttr(u.id)}">
       <img class="avatar avatar-sm" src="${escaparAttr(u.avatar)}" alt="avatar">
       <div class="admin-user-info">
         <strong>${escaparHtml(u.name)}</strong>
         <span>${escaparHtml(u.handle)}</span>
-        <small>Strikes: ${u.strikes || 0}/${MAX_STRIKES} | Role: ${u.role}</small>
+        <small>Strikes: ${u.strikes || 0}/${MAX_STRIKES} | Cargo: ${rotuloCargo}</small>
       </div>
       <span class="user-status ${u.banned ? 'banido' : 'ativo'}">${status}</span>
-      ${u.role !== 'admin' ? (u.banned
-        ? `<button class="btn btn-unban-user" data-userid="${escaparAttr(u.id)}">Desbanir</button>`
-        : `<button class="btn btn-ban-user" data-userid="${escaparAttr(u.id)}">Banir</button>`
-      ) : '<span>👑 Admin</span>'}
-      ${u.role !== 'admin' ? `<button class="btn btn-del-user btn-danger" data-userdel="${escaparAttr(u.id)}">🗑️ Excluir</button>` : ''}
+      <div class="admin-user-acoes">${acoes.join('')}</div>
     </div>
   `;
 }
@@ -1406,6 +1454,7 @@ function templateAdminUser(u) {
 // ============================================================
 async function carregarAdminPanel() {
   await Promise.all([
+    carregarStatsAdmin(),
     carregarReportsAdmin(),
     carregarUsuariosAdmin()
   ]);
@@ -1445,10 +1494,22 @@ async function carregarReportsAdmin() {
 async function carregarUsuariosAdmin() {
   const { resp, data } = await api('/api/admin/users');
   if (!resp.ok) return;
-  const usuarios = Array.isArray(data) ? data : [];
+  todosUsuariosAdmin = Array.isArray(data) ? data : [];
+
+  const filtro = adminUserFiltro;
+  const usuarios = todosUsuariosAdmin.filter((u) =>
+    !filtro || String(u.name).toLowerCase().includes(filtro) || String(u.handle).toLowerCase().includes(filtro)
+  );
+
   listaAdminUsers.innerHTML = usuarios.length
     ? usuarios.map(templateAdminUser).join('')
     : '<div class="admin-lista-vazia">Nenhum usuário encontrado.</div>';
+
+  ligarAcoesAdminUsuarios();
+}
+
+function ligarAcoesAdminUsuarios() {
+  const atualizar = () => { carregarUsuariosAdmin(); carregarStatsAdmin(); };
 
   listaAdminUsers.querySelectorAll('.btn-ban-user').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -1458,14 +1519,45 @@ async function carregarUsuariosAdmin() {
       const { resp } = await api(`/api/admin/users/${alvoId}/ban`, {
         method: 'POST', body: JSON.stringify({ motivo })
       });
-      if (resp.ok) { mostrarToast('Usuário banido.'); carregarUsuariosAdmin(); }
+      if (resp.ok) { mostrarToast('Usuário banido.'); atualizar(); carregarReportsAdmin(); }
     });
   });
   listaAdminUsers.querySelectorAll('.btn-unban-user').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const alvoId = btn.dataset.userid;
       const { resp } = await api(`/api/admin/users/${alvoId}/unban`, { method: 'POST' });
-      if (resp.ok) { mostrarToast('Usuário desbanido.'); carregarUsuariosAdmin(); }
+      if (resp.ok) { mostrarToast('Usuário desbanido.'); atualizar(); carregarReportsAdmin(); }
+    });
+  });
+  listaAdminUsers.querySelectorAll('.btn-strike-user').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const alvoId = btn.dataset.userid;
+      const motivo = prompt('Motivo do strike:') || 'Violação das regras';
+      if (!motivo.trim()) return;
+      const { resp, data } = await api(`/api/admin/users/${alvoId}/strike`, {
+        method: 'POST', body: JSON.stringify({ motivo })
+      });
+      if (resp.ok) { mostrarToast(`Strike aplicado (${data.strikes}/${MAX_STRIKES}).`); atualizar(); carregarReportsAdmin(); }
+    });
+  });
+  listaAdminUsers.querySelectorAll('.btn-remove-strike').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const alvoId = btn.dataset.userid;
+      if (!confirm('Remover 1 strike deste usuário?')) return;
+      const { resp } = await api(`/api/admin/users/${alvoId}/remove-strike`, { method: 'POST' });
+      if (resp.ok) { mostrarToast('Strike removido.'); atualizar(); }
+    });
+  });
+  listaAdminUsers.querySelectorAll('.btn-role-user').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const alvoId = btn.dataset.userid;
+      const role = btn.dataset.role;
+      const rotulo = role === 'admin' ? 'administrador' : role === 'moderador' ? 'moderador' : 'usuário comum';
+      if (!confirm(`Alterar o cargo deste usuário para ${rotulo}?`)) return;
+      const { resp } = await api(`/api/admin/users/${alvoId}/role`, {
+        method: 'POST', body: JSON.stringify({ role })
+      });
+      if (resp.ok) { mostrarToast(`Cargo alterado para ${rotulo}.`); atualizar(); }
     });
   });
   listaAdminUsers.querySelectorAll('.btn-del-user').forEach((btn) => {
@@ -1479,10 +1571,66 @@ async function carregarUsuariosAdmin() {
         todosUsuarios = todosUsuarios.filter((u) => u.id !== alvoId);
         renderizarContatos();
         renderizarSugestoes();
-        carregarUsuariosAdmin();
+        atualizar();
       }
     });
   });
+}
+
+async function carregarStatsAdmin() {
+  const { resp, data } = await api('/api/admin/stats');
+  if (!resp.ok) return;
+  const s = data || {};
+  const cards = [
+    ['👥 Usuários', s.totalUsuarios],
+    ['📝 Posts', s.totalPosts],
+    ['🎬 Posts c/ vídeo', s.totalPostsComVideo],
+    ['💬 Mensagens', s.totalMensagens],
+    ['🚩 Reports', s.totalReports],
+    ['⏳ Reports pendentes', s.reportesPendentes],
+    ['🚫 Banidos', s.totalBanidos],
+    ['👑 Admins', s.totalAdmins],
+    ['🛡️ Moderadores', s.totalModeradores],
+    ['⚠️ Strikes (total)', s.totalStrikes]
+  ];
+  adminStatsEl.innerHTML = cards.map(([label, valor]) => `
+    <div class="admin-stat-card">
+      <span class="admin-stat-valor">${valor ?? 0}</span>
+      <span class="admin-stat-label">${label}</span>
+    </div>
+  `).join('');
+}
+
+async function enviarAnuncioGlobal() {
+  const mensagem = adminAnuncioTexto.value.trim();
+  if (!mensagem) { mostrarToast('Digite o texto do anúncio.'); return; }
+  const trecho = mensagem.length > 120 ? mensagem.slice(0, 120) + '…' : mensagem;
+  if (!confirm(`Enviar este anúncio para todos os usuários?\n\n"${trecho}"`)) return;
+  const { resp, data } = await api('/api/admin/announcement', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mensagem })
+  });
+  if (resp.ok) {
+    mostrarToast(`📢 Anúncio enviado para ${data.destinatarios || 0} usuário(s).`);
+    adminAnuncioTexto.value = '';
+  } else {
+    mostrarToast(data?.error || 'Não foi possível enviar o anúncio.');
+  }
+}
+
+function mudarAbaAdmin(btn, painel) {
+  const botoes = [btnAdminStats, btnAdminReports, btnAdminUsers, btnAdminPosts, btnAdminAnuncio];
+  const paineis = [tabStats, tabReports, tabUsers, tabPosts, tabAnuncio];
+  botoes.forEach((b) => b.classList.remove('btn-admin-ativo'));
+  paineis.forEach((p) => p.classList.add('hidden'));
+  btn.classList.add('btn-admin-ativo');
+  painel.classList.remove('hidden');
+
+  if (painel === tabStats) carregarStatsAdmin();
+  if (painel === tabUsers) carregarUsuariosAdmin();
+  if (painel === tabPosts) renderizarAdminPosts();
+  if (painel === tabReports) carregarReportsAdmin();
 }
 
 function renderizarAdminPosts() {
@@ -1515,7 +1663,7 @@ function irParaPagina(nome) {
   if (nome === 'explorar') renderizarBusca(inputBusca.value.trim().toLowerCase());
     if (nome === 'mensagens' && usuarioAtual) carregarMensagens();
   if (nome === 'notificacoes') marcarNotificacoesLidas();
-  if (nome === 'admin' && usuarioAtual && usuarioAtual.role === 'admin') carregarAdminPanel();
+  if (nome === 'admin' && usuarioAtual && ehStaff(usuarioAtual)) carregarAdminPanel();
 }
 
 // ============================================================

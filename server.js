@@ -213,6 +213,13 @@ function middlewareAdmin(req, res, next) {
   next();
 }
 
+function middlewareModerador(req, res, next) {
+  if (!req.usuario || (req.usuario.role !== 'admin' && req.usuario.role !== 'moderador')) {
+    return res.status(403).json({ error: 'Acesso restrito a moderadores e administradores.' });
+  }
+  next();
+}
+
 function notificarAdmins(mensagem, tipo, deUserId) {
   const adminIds = usersDb.get('users').filter({ role: 'admin' }).map('id').value();
   for (const adminId of adminIds) {
@@ -813,7 +820,7 @@ app.post('/api/notifications/read', middlewareAuth, (req, res) => {
 
 // ===================== ROTAS ADMIN =====================
 // Listar todos os usuários (admin)
-app.get('/api/admin/users', middlewareAuth, middlewareAdmin, (req, res) => {
+app.get('/api/admin/users', middlewareAuth, middlewareModerador, (req, res) => {
   const usuarios = usersDb.get('users').map((u) => {
     const clone = { ...u };
     delete clone.passwordHash;
@@ -823,7 +830,7 @@ app.get('/api/admin/users', middlewareAuth, middlewareAdmin, (req, res) => {
 });
 
 // Listar reports (admin)
-app.get('/api/admin/reports', middlewareAuth, middlewareAdmin, (req, res) => {
+app.get('/api/admin/reports', middlewareAuth, middlewareModerador, (req, res) => {
   const qs = req.query || {};
   let query = reportsDb.get('reports');
   if (qs.resolvidos === 'false' || qs.resolvidos === undefined) {
@@ -836,7 +843,7 @@ app.get('/api/admin/reports', middlewareAuth, middlewareAdmin, (req, res) => {
 });
 
 // Responder a um report (admin)
-app.post('/api/admin/reports/:id/responder', middlewareAuth, middlewareAdmin, (req, res) => {
+app.post('/api/admin/reports/:id/responder', middlewareAuth, middlewareModerador, (req, res) => {
   const { id } = req.params;
   const { resolver = true, banir = false, motivoBan = 'Violação das regras' } = req.body || {};
 
@@ -865,7 +872,7 @@ app.post('/api/admin/reports/:id/responder', middlewareAuth, middlewareAdmin, (r
 });
 
 // Deletar qualquer post (admin) – limpa mídia do disco
-app.delete('/api/admin/posts/:id', middlewareAuth, middlewareAdmin, (req, res) => {
+app.delete('/api/admin/posts/:id', middlewareAuth, middlewareModerador, (req, res) => {
   const post = postsDb.get('posts').find({ id: req.params.id }).value();
   if (!post) return res.status(404).json({ error: 'Post não encontrado.' });
   removerMidiaPost(post);
@@ -875,7 +882,7 @@ app.delete('/api/admin/posts/:id', middlewareAuth, middlewareAdmin, (req, res) =
 });
 
 // Banir usuário (admin)
-app.post('/api/admin/users/:id/ban', middlewareAuth, middlewareAdmin, (req, res) => {
+app.post('/api/admin/users/:id/ban', middlewareAuth, middlewareModerador, (req, res) => {
   const { motivo = 'Violação das regras' } = req.body || {};
   const usuario = obterUsuarioPorId(req.params.id);
   if (!usuario) return res.status(404).json({ error: 'Usuário não encontrado.' });
@@ -895,7 +902,7 @@ app.post('/api/admin/users/:id/ban', middlewareAuth, middlewareAdmin, (req, res)
 });
 
 // Desbanir usuário (admin)
-app.post('/api/admin/users/:id/unban', middlewareAuth, middlewareAdmin, (req, res) => {
+app.post('/api/admin/users/:id/unban', middlewareAuth, middlewareModerador, (req, res) => {
   const usuario = obterUsuarioPorId(req.params.id);
   if (!usuario) return res.status(404).json({ error: 'Usuário não encontrado.' });
 
@@ -909,6 +916,143 @@ app.post('/api/admin/users/:id/unban', middlewareAuth, middlewareAdmin, (req, re
 
   notificarAdmins(`${usuario.name} (@${usuario.handle}) foi desbanido por ${req.usuario.name}.`, 'banimento', req.params.id);
   res.json({ ok: true });
+});
+
+// Estatísticas gerais do painel (admin/moderador)
+app.get('/api/admin/stats', middlewareAuth, middlewareModerador, (req, res) => {
+  const users = usersDb.get('users').value();
+  const posts = postsDb.get('posts').value();
+  const reports = reportsDb.get('reports').value();
+  const messages = messagesDb.get('messages').value();
+
+  res.json({
+    totalUsuarios: users.length,
+    totalPosts: posts.length,
+    totalPostsComVideo: posts.filter((p) => p.video).length,
+    totalMensagens: messages.length,
+    totalReports: reports.length,
+    reportesPendentes: reports.filter((r) => !r.resolvido).length,
+    totalBanidos: users.filter((u) => u.banned).length,
+    totalAdmins: users.filter((u) => u.role === 'admin').length,
+    totalModeradores: users.filter((u) => u.role === 'moderador').length,
+    totalStrikes: users.reduce((soma, u) => soma + (u.strikes || 0), 0)
+  });
+});
+
+// Aplicar strike manual em um usuário (admin/moderador)
+app.post('/api/admin/users/:id/strike', middlewareAuth, middlewareModerador, (req, res) => {
+  const { motivo = 'Strike aplicado pela moderação' } = req.body || {};
+  const usuario = obterUsuarioPorId(req.params.id);
+  if (!usuario) return res.status(404).json({ error: 'Usuário não encontrado.' });
+  if (usuario.role === 'admin') return res.status(400).json({ error: 'Não é possível aplicar strike a um admin.' });
+
+  const strikes = (usuario.strikes || 0) + 1;
+  const patch = { strikes };
+  if (strikes >= MAX_STRIKES) {
+    patch.banned = true;
+    patch.banReason = String(motivo).slice(0, 280);
+    patch.bannedAt = Date.now();
+    patch.bannedBy = req.usuario.id;
+  }
+
+  usersDb.get('users').find({ id: req.params.id }).assign(patch).write();
+
+  if (patch.banned) {
+    revogarSessoesDoUsuario(req.params.id);
+    io.to(`user:${req.params.id}`).emit('usuarioBanido', { motivo, strikes });
+  }
+
+  reportsDb.get('reports').unshift({
+    id: gerarId('r'),
+    tipo: 'strike',
+    motivo: String(motivo).slice(0, 280),
+    deUserId: req.usuario.id,
+    targetUserId: req.params.id,
+    postagemId: null,
+    resolvido: false,
+    createdAt: Date.now()
+  }).write();
+
+  const notifUser = criarNotificacao(
+    req.params.id,
+    `Você recebeu um strike (${strikes}/${MAX_STRIKES}): ${motivo}`,
+    'strike',
+    req.usuario.id
+  );
+  if (notifUser) io.to(`user:${req.params.id}`).emit('notificacao', notifUser);
+
+  notificarAdmins(
+    `${usuario.name} (@${usuario.handle}) recebeu strike manual (${strikes}/${MAX_STRIKES}): ${motivo}`,
+    'strike',
+    req.params.id
+  );
+  io.emit('usuarioAtualizado', { id: req.params.id, strikes, banned: !!patch.banned });
+  res.json({ ok: true, strikes, banned: !!patch.banned });
+});
+
+// Remover strike manual (admin)
+app.post('/api/admin/users/:id/remove-strike', middlewareAuth, middlewareAdmin, (req, res) => {
+  const usuario = obterUsuarioPorId(req.params.id);
+  if (!usuario) return res.status(404).json({ error: 'Usuário não encontrado.' });
+
+  const strikes = Math.max(0, (usuario.strikes || 0) - 1);
+  usersDb.get('users').find({ id: req.params.id }).assign({ strikes }).write();
+
+  notificarAdmins(
+    `${usuario.name} (@${usuario.handle}) teve um strike removido (${strikes}/${MAX_STRIKES}).`,
+    'strike',
+    req.params.id
+  );
+  io.emit('usuarioAtualizado', { id: req.params.id, strikes });
+  res.json({ ok: true, strikes });
+});
+
+// Alterar cargo de um usuário (somente admin)
+app.post('/api/admin/users/:id/role', middlewareAuth, middlewareAdmin, (req, res) => {
+  const { role } = req.body || {};
+  const alvo = obterUsuarioPorId(req.params.id);
+  if (!alvo) return res.status(404).json({ error: 'Usuário não encontrado.' });
+  if (req.usuario.id === alvo.id) return res.status(400).json({ error: 'Você não pode alterar o seu próprio cargo.' });
+  if (alvo.role === 'admin' && role !== 'admin') return res.status(400).json({ error: 'Não é possível rebaixar outro administrador.' });
+  if (!['user', 'moderador', 'admin'].includes(role)) return res.status(400).json({ error: 'Cargo inválido. Use user, moderador ou admin.' });
+
+  usersDb.get('users').find({ id: alvo.id }).assign({ role }).write();
+
+  const rotulo = role === 'moderador' ? 'moderador' : (role === 'admin' ? 'administrador' : 'usuário comum');
+  const notifAlvo = criarNotificacao(
+    alvo.id,
+    `A administração alterou o seu cargo para: ${rotulo}.`,
+    'geral',
+    req.usuario.id
+  );
+  if (notifAlvo) io.to(`user:${alvo.id}`).emit('notificacao', notifAlvo);
+
+  notificarAdmins(
+    `${alvo.name} (@${alvo.handle}) agora é ${rotulo} (definido por ${req.usuario.name}).`,
+    'geral',
+    alvo.id
+  );
+  io.emit('usuarioAtualizado', { id: alvo.id, role });
+  res.json({ ok: true, role });
+});
+
+// Anúncio global para todos os usuários (somente admin)
+app.post('/api/admin/announcement', middlewareAuth, middlewareAdmin, (req, res) => {
+  const mensagem = String((req.body || {}).mensagem || '').trim().slice(0, 280);
+  if (!mensagem) return res.status(400).json({ error: 'Digite o texto do anúncio.' });
+
+  const usuarios = usersDb.get('users').value();
+  let destinatarios = 0;
+  for (const u of usuarios) {
+    const notif = criarNotificacao(u.id, `📢 Anúncio da administração: ${mensagem}`, 'anuncio', req.usuario.id);
+    if (notif) {
+      destinatarios++;
+      io.to(`user:${u.id}`).emit('notificacao', notif);
+    }
+  }
+
+  notificarAdmins(`Anúncio enviado para ${destinatarios} usuários.`, 'geral', req.usuario.id);
+  res.json({ ok: true, destinatarios });
 });
 
 // Excluir conta permanentemente (admin)

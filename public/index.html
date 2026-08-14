@@ -215,19 +215,29 @@
           <div class="pagina-titulo">Painel Admin</div>
           <section class="admin-ongs">
             <div class="admin-aba-header">
-              <button id="btn-admin-reports" class="btn-admin-aba btn-admin-ativo">Reports</button>
+              <button id="btn-admin-stats" class="btn-admin-aba btn-admin-ativo">📊 Estatísticas</button>
+              <button id="btn-admin-reports" class="btn-admin-aba">Reports</button>
               <button id="btn-admin-users" class="btn-admin-aba">Usuários</button>
               <button id="btn-admin-posts" class="btn-admin-aba">Posts</button>
+              <button id="btn-admin-anuncio" class="btn-admin-aba">📢 Anúncio</button>
+            </div>
+
+            <!-- Aba: Estatísticas -->
+            <div id="admin-tabpanel-stats" class="admin-tabpanel">
+              <div id="admin-stats" class="admin-stats">
+                <div class="admin-lista-vazia">Carregando estatísticas...</div>
+              </div>
             </div>
 
             <!-- Aba: Reports -->
-            <div id="admin-tabpanel-reports" class="admin-tabpanel">
+            <div id="admin-tabpanel-reports" class="admin-tabpanel hidden">
               <div class="admin-lista-vazia" id="lista-reports-vazia">Nenhum reporte pendente.</div>
               <div id="lista-reports" class="lista-reports"></div>
             </div>
 
             <!-- Aba: Usuários -->
             <div id="admin-tabpanel-users" class="admin-tabpanel hidden">
+              <input type="text" id="admin-busca-usuarios" class="input-busca" placeholder="🔍 Buscar por @handle ou nome">
               <div class="admin-lista-vazia" id="lista-usuarios-vazia">Nenhum usuário encontrado.</div>
               <div id="lista-admin-users" class="lista-admin-users"></div>
             </div>
@@ -236,6 +246,17 @@
             <div id="admin-tabpanel-posts" class="admin-tabpanel hidden">
               <div class="admin-lista-vazia" id="lista-posts-vazia">Nenhum post encontrado.</div>
               <div id="lista-admin-posts" class="lista-posts"></div>
+            </div>
+
+            <!-- Aba: Anúncio -->
+            <div id="admin-tabpanel-anuncio" class="admin-tabpanel hidden">
+              <div class="admin-anuncio-form">
+                <label class="admin-form-label" for="admin-anuncio-texto">Texto do anúncio (todos os usuários receberão uma notificação)</label>
+                <textarea id="admin-anuncio-texto" class="admin-textarea" maxlength="280" placeholder="Ex.: Novo recurso disponível! 🎉"></textarea>
+                <div class="admin-anuncio-acoes">
+                  <button id="btn-admin-anuncio-enviar" class="btn btn-primario">📢 Enviar para todos</button>
+                </div>
+              </div>
             </div>
           </section>
         </div>
