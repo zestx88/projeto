@@ -1019,6 +1019,7 @@ img { max-width: 100%; display: block; }
 .user-status { font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 999px; }
 .user-status.ativo { background: rgba(0, 186, 124, 0.15); color: var(--verde); }
 .user-status.banido { background: rgba(249, 24, 128, 0.15); color: var(--vermelho); }
+.user-status.suspenso { background: rgba(255, 165, 0, 0.18); color: #e88a00; }
 
 /* Estatísticas */
 .admin-stats {
@@ -1060,6 +1061,101 @@ img { max-width: 100%; display: block; }
 
 /* Busca na aba usuários */
 .admin-tabpanel-users .input-busca { width: 100%; margin-bottom: 12px; }
+
+/* ============================================================
+   ENQUETES / HASHTAGS / POSTS FIXADOS
+   ============================================================ */
+
+/* --- Criador de enquete no compositor --- */
+.preview-enquete-wrap { margin: 10px 0 10px 60px; display: flex; flex-direction: column; gap: 10px; }
+.enquete-criador {
+  border: 1px solid var(--borda);
+  border-radius: 14px;
+  background: var(--bg-secundario);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.enquete-criador-titulo { font-weight: 700; color: var(--texto-secundario); font-size: 13px; }
+#poll-pergunta, .poll-opcao-input {
+  width: 100%;
+  border: 1px solid var(--borda);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--texto);
+  padding: 9px 14px;
+  font-size: 14px;
+  outline: none;
+  font-family: inherit;
+}
+#poll-pergunta:focus, .poll-opcao-input:focus { border-color: var(--azul); }
+.poll-opcoes-criador { display: flex; flex-direction: column; gap: 8px; }
+.poll-opcao-linha { display: flex; align-items: center; gap: 6px; }
+.poll-criador-acoes { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.poll-opcoes-contador { font-size: 12px; color: var(--texto-secundario); }
+.btn-add-enquete.ativo, #btn-add-enquete.ativo { color: var(--azul); background: var(--hover); }
+.poll-rm-opcao { position: static; flex: none; background: rgba(0,0,0,0.1); }
+
+/* --- Enquete exibida no post --- */
+.poll-bloco {
+  border: 1px solid var(--borda);
+  border-radius: 14px;
+  background: var(--bg-secundario);
+  padding: 12px 14px;
+  margin: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.poll-pergunta { font-weight: 700; font-size: 15px; margin-bottom: 4px; }
+.poll-opcoes { display: flex; flex-direction: column; gap: 8px; }
+.poll-opcao-voto {
+  text-align: left;
+  border: 1px solid var(--borda);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--texto);
+  padding: 8px 14px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.poll-opcao-voto:hover { background: var(--hover); border-color: var(--azul); }
+.poll-resultado-linha { display: flex; flex-direction: column; gap: 4px; }
+.poll-resultado-linha.poll-minha { font-weight: 700; }
+.poll-resultado-topo { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+.poll-bar { height: 12px; border-radius: 999px; background: var(--hover); overflow: hidden; }
+.poll-bar-preenchida { height: 100%; background: var(--azul); border-radius: 999px; transition: width 0.3s ease; }
+.poll-total { font-size: 12px; color: var(--texto-secundario); }
+
+/* --- Hashtags --- */
+.hashtag-link { color: var(--azul); cursor: pointer; font-weight: 600; }
+.hashtag-link:hover { text-decoration: underline; }
+.resultados-hashtags { padding: 12px 0; }
+.hashtag-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+.hashtag-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--borda);
+  border-radius: 999px;
+  background: var(--bg-secundario);
+  color: var(--azul);
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.hashtag-pill small { color: var(--texto-secundario); font-weight: 400; }
+.hashtag-titulo { display: flex; align-items: center; gap: 10px; }
+
+/* --- Posts fixados --- */
+.post-pin-indicador { color: var(--azul); font-size: 13px; }
+.post-acao.pin:hover { color: var(--azul); }
+.post-acao.pin.pinned { color: var(--azul); }
+.fixados-perfil { border-bottom: 1px solid var(--borda); }
+.fixados-titulo { font-size: 17px !important; }
 
 /* ============================================================
    RESPONSIVO

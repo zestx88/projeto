@@ -115,6 +115,18 @@
               <img id="compositor-avatar" class="avatar" src="" alt="avatar">
               <textarea id="input-post" maxlength="280" placeholder="O que está acontecendo?"></textarea>
             </div>
+            <div id="preview-enquete-wrap" class="preview-enquete-wrap hidden">
+              <div class="enquete-criador">
+                <div class="enquete-criador-titulo">🗳️ Criar enquete</div>
+                <input type="text" id="poll-pergunta" maxlength="280" placeholder="Digite a pergunta da enquete">
+                <div id="poll-opcoes" class="poll-opcoes-criador"></div>
+                <div class="poll-criador-acoes">
+                  <button type="button" id="btn-add-opcao" class="btn btn-sm">+ Adicionar opção</button>
+                  <button type="button" id="btn-remover-enquete" class="btn btn-sm">✕ Remover enquete</button>
+                  <span id="poll-opcoes-contador" class="poll-opcoes-contador">2/6</span>
+                </div>
+              </div>
+            </div>
             <div id="preview-imagem-wrap" class="preview-imagem-wrap hidden">
               <img id="preview-imagem" src="" alt="preview">
               <button id="btn-remover-imagem" class="btn-remover-img">✕</button>
@@ -126,6 +138,7 @@
                 <button id="btn-add-video" class="btn-icone" title="Adicionar vídeo do dispositivo">🎬</button>
                 <input type="file" id="input-arquivo-video" accept="video/*" class="hidden">
                 <button id="btn-mencionar" class="btn-icone" type="button" title="Marcar pessoa (@)">@</button>
+                <button id="btn-add-enquete" class="btn-icone" type="button" title="Criar enquete">🗳️</button>
                 <span id="contador-caracteres" class="contador">280</span>
               </div>
               <button id="btn-postar" class="btn-postar" disabled>Postar</button>
@@ -177,7 +190,20 @@
               <span><strong id="perfil-posts-qtd">0</strong> Posts</span>
             </div>
           </section>
+          <div id="secao-fixados-perfil" class="fixados-perfil hidden">
+            <div class="pagina-titulo fixados-titulo">📌 Publicações fixadas</div>
+            <section id="lista-posts-fixados-perfil" class="lista-posts"></section>
+          </div>
           <section id="lista-posts-perfil" class="lista-posts"></section>
+        </div>
+
+        <!-- ===== PÁGINA: HASHTAG ===== -->
+        <div id="pagina-hashtag" class="pagina hidden">
+          <div class="pagina-titulo hashtag-titulo">
+            <button id="btn-voltar-hashtag" class="btn-icone" type="button" title="Voltar">←</button>
+            <span id="hashtag-titulo">#</span>
+          </div>
+          <section id="lista-hashtag" class="lista-posts"></section>
         </div>
 
         <!-- ===== PÁGINA: NOTIFICAÇÕES ===== -->

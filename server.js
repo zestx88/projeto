@@ -51,6 +51,8 @@ const MAX_VIDEO_BYTES = 40 * 1024 * 1024; // 40 MB
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024; // 2 MB
 const MAX_NOTIFICACOES_POR_USER = 100;
 const MAX_STRIKES = 3; // strikes automáticos antes do banimento
+const MAX_FIXADOS = 3; // máximo de posts fixados por usuário
+const MAX_OPCOES_ENQUETE = 6; // opções máximas por enquete
 
 const AUTH_SECRET = process.env.AUTH_SECRET || 'tadashi-dev-secret-change-me';
 
@@ -111,6 +113,24 @@ function obterUsuarioPorHandle(handle) {
   return usersDb.get('users').find((u) => String(u.handle).toLowerCase() === h).value() || null;
 }
 
+// Verdadeiro enquanto o usuário tiver uma suspensão temporária ativa.
+function usuarioEstaSuspenso(usuario) {
+  return !!(usuario && usuario.suspendedUntil && usuario.suspendedUntil > Date.now());
+}
+
+// Se a suspensão já expirou, limpa os campos (permite login novamente).
+function limparSuspensaoExpirada(usuario) {
+  if (!usuario) return;
+  if (usuario.suspendedUntil && usuario.suspendedUntil <= Date.now()) {
+    usersDb.get('users').find({ id: usuario.id }).assign({
+      suspendedUntil: 0,
+      suspendedReason: '',
+      suspendedAt: 0,
+      suspendedBy: ''
+    }).write();
+  }
+}
+
 /**
  * Extrai os ids de usuários mencionados via @handle no texto.
  * Retorna um array de ids (sem o próprio autor, filtrado pelo chamador se preciso).
@@ -126,6 +146,28 @@ function extrairUsuariosMencionados(texto, ignorarId) {
     if (u && u.id !== ignorarId) ids.add(u.id);
   }
   return Array.from(ids);
+}
+
+/**
+ * Extrai hashtags (#palavra) de um texto.
+ * Retorna lista de términos de hashtags normalizados em minúsculas e sem duplicados.
+ * Suporta acentos e números (ex: #8A, #matemática).
+ */
+function extrairHashtags(texto) {
+  if (!texto) return [];
+  const resultado = [];
+  const vistos = new Set();
+  const re = /#([\p{L}\p{N}_]+)/gu;
+  let match;
+  const str = String(texto);
+  while ((match = re.exec(str)) !== null) {
+    const tag = match[1].toLowerCase();
+    if (!vistos.has(tag)) {
+      vistos.add(tag);
+      resultado.push(tag);
+    }
+  }
+  return resultado;
 }
 
 function limparSessoesExpiradas() {
@@ -167,6 +209,12 @@ function validarToken(token) {
   if (!usuario) return null;
   // Usuário banido: invalida sessão e revoga todas as sessões ativas
   if (usuario.banned) {
+    revogarSessoesDoUsuario(sessao.userId);
+    return null;
+  }
+  // Usuário suspenso temporariamente: limpa suspensão expirada e bloqueia o acesso
+  limparSuspensaoExpirada(usuario);
+  if (usuarioEstaSuspenso(usuario)) {
     revogarSessoesDoUsuario(sessao.userId);
     return null;
   }
@@ -519,6 +567,17 @@ app.post('/api/login', rateLimit(5, 60000), (req, res) => {
       bannedAt: usuario.bannedAt || 0
     });
   }
+  // Bloqueia login de usuários suspensos temporariamente
+  limparSuspensaoExpirada(usuario);
+  if (usuarioEstaSuspenso(usuario)) {
+    const ate = new Date(usuario.suspendedUntil).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+    return res.status(403).json({
+      error: `Conta suspensa até ${ate}: ${usuario.suspendedReason || 'entre em contato com um administrador'}.`,
+      suspended: true,
+      suspendedUntil: usuario.suspendedUntil,
+      suspendedReason: usuario.suspendedReason || ''
+    });
+  }
 
   const token = criarSessao(usuario.id);
   res.json({ token, user: usuarioPublico(usuario) });
@@ -539,6 +598,12 @@ app.post('/api/quick-login', rateLimit(10, 60000), (req, res) => {
   }
   if (usuario.banned) {
     return res.status(403).json({ error: `Conta banida: ${usuario.banReason || 'contato com administrador'}.` });
+  }
+  // Bloqueia login de usuários suspensos temporariamente
+  limparSuspensaoExpirada(usuario);
+  if (usuarioEstaSuspenso(usuario)) {
+    const ate = new Date(usuario.suspendedUntil).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+    return res.status(403).json({ error: `Conta suspensa até ${ate}: ${usuario.suspendedReason || 'entre em contato com um administrador'}.` });
   }
 
   const token = criarSessao(usuario.id);
@@ -795,6 +860,31 @@ app.get('/api/posts/usuario/:id', (req, res) => {
   res.json(posts);
 });
 
+// Posts que contêm determinada hashtag (busca sem diferenciar maiúsculas/minúsculas)
+app.get('/api/posts/hashtag/:tag', (req, res) => {
+  const tag = String(req.params.tag || '').toLowerCase();
+  if (!tag) return res.json([]);
+  const posts = postsDb.get('posts')
+    .filter((p) => (p.hashtags || []).includes(tag))
+    .sortBy('createdAt')
+    .reverse()
+    .value();
+  res.json(posts);
+});
+
+// Hashtags mais populares (por frequência de uso)
+app.get('/api/hashtags/populares', (req, res) => {
+  const contagem = {};
+  postsDb.get('posts').value().forEach((p) => {
+    (p.hashtags || []).forEach((t) => { contagem[t] = (contagem[t] || 0) + 1; });
+  });
+  const lista = Object.keys(contagem)
+    .map((t) => ({ tag: t, count: contagem[t] }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 20);
+  res.json(lista);
+});
+
 // Notificações persistentes
 app.get('/api/notifications', middlewareAuth, (req, res) => {
   const lista = notificationsDb.get('notifications')
@@ -918,6 +1008,60 @@ app.post('/api/admin/users/:id/unban', middlewareAuth, middlewareModerador, (req
   res.json({ ok: true });
 });
 
+// Suspender usuário temporariamente (admin)
+app.post('/api/admin/users/:id/suspend', middlewareAuth, middlewareModerador, (req, res) => {
+  const { duracaoHoras = 24, motivo = 'Suspensão temporária' } = req.body || {};
+  const usuario = obterUsuarioPorId(req.params.id);
+  if (!usuario) return res.status(404).json({ error: 'Usuário não encontrado.' });
+  if (usuario.role === 'admin') return res.status(400).json({ error: 'Não é possível suspender outro admin.' });
+
+  const horas = Math.max(0.25, Number(duracaoHoras) || 24); // mínimo 15 min
+  const ate = Date.now() + horas * 3600 * 1000;
+
+  usersDb.get('users').find({ id: req.params.id }).assign({
+    suspendedUntil: ate,
+    suspendedReason: String(motivo).slice(0, 280),
+    suspendedAt: Date.now(),
+    suspendedBy: req.usuario.id
+  }).write();
+
+  revogarSessoesDoUsuario(req.params.id);
+  io.to(`user:${req.params.id}`).emit('usuarioSuspenso', {
+    motivo: String(motivo),
+    ate
+  });
+  notificarAdmins(
+    `${usuario.name} (@${usuario.handle}) foi suspenso por ${req.usuario.name} até ${new Date(ate).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}.`,
+    'banimento',
+    req.params.id
+  );
+  io.emit('usuarioAtualizado', { id: req.params.id, suspendedUntil: ate });
+
+  res.json({ ok: true, ate });
+});
+
+// Des-suspender usuário (admin)
+app.post('/api/admin/users/:id/unsuspend', middlewareAuth, middlewareModerador, (req, res) => {
+  const usuario = obterUsuarioPorId(req.params.id);
+  if (!usuario) return res.status(404).json({ error: 'Usuário não encontrado.' });
+
+  usersDb.get('users').find({ id: req.params.id }).assign({
+    suspendedUntil: 0,
+    suspendedReason: '',
+    suspendedAt: 0,
+    suspendedBy: ''
+  }).write();
+
+  notificarAdmins(
+    `${usuario.name} (@${usuario.handle}) teve a suspensão encerrada por ${req.usuario.name}.`,
+    'banimento',
+    req.params.id
+  );
+  io.emit('usuarioAtualizado', { id: req.params.id, suspendedUntil: 0 });
+
+  res.json({ ok: true });
+});
+
 // Estatísticas gerais do painel (admin/moderador)
 app.get('/api/admin/stats', middlewareAuth, middlewareModerador, (req, res) => {
   const users = usersDb.get('users').value();
@@ -933,6 +1077,7 @@ app.get('/api/admin/stats', middlewareAuth, middlewareModerador, (req, res) => {
     totalReports: reports.length,
     reportesPendentes: reports.filter((r) => !r.resolvido).length,
     totalBanidos: users.filter((u) => u.banned).length,
+    totalSuspensos: users.filter((u) => usuarioEstaSuspenso(u)).length,
     totalAdmins: users.filter((u) => u.role === 'admin').length,
     totalModeradores: users.filter((u) => u.role === 'moderador').length,
     totalStrikes: users.reduce((soma, u) => soma + (u.strikes || 0), 0)
@@ -1148,10 +1293,31 @@ io.on('connection', (socket) => {
       return;
     }
 
-    if (!texto.trim() && !imagem && !video) {
+    // ----- Enquete -----
+    const tipo = dados.tipo === 'poll' ? 'poll' : 'normal';
+    let poll = null;
+    if (tipo === 'poll') {
+      const pergunta = String((dados.poll && dados.poll.question) || '').trim().slice(0, 280);
+      const opcoes = Array.isArray(dados.poll && dados.poll.options)
+        ? dados.poll.options.map((o) => String(o || '').trim()).filter(Boolean).slice(0, MAX_OPCOES_ENQUETE)
+        : [];
+      if (pergunta && opcoes.length >= 2 && opcoes.length <= MAX_OPCOES_ENQUETE) {
+        poll = {
+          question: pergunta,
+          options: opcoes.map((t) => ({ text: t.slice(0, 120), votes: [] }))
+        };
+      } else {
+        socket.emit('erroAcao', { error: `Enquete inválida: informe a pergunta e entre 2 e ${MAX_OPCOES_ENQUETE} opções.` });
+        return;
+      }
+    }
+
+    if (!texto.trim() && !imagem && !video && !poll) {
       socket.emit('erroAcao', { error: 'Post vazio.' });
       return;
     }
+
+    const hashtags = extrairHashtags(texto);
 
     const post = {
       id: gerarId('p'),
@@ -1162,6 +1328,10 @@ io.on('connection', (socket) => {
       texto,
       imagem,
       video,
+      type: tipo,
+      poll,
+      hashtags,
+      pinnedBy: null,
       createdAt: Date.now(),
       likes: [],
       comentarios: [],
@@ -1232,6 +1402,10 @@ io.on('connection', (socket) => {
       texto: original.texto,
       imagem: original.imagem,
       video: original.video,
+      type: original.type || 'normal',
+      poll: original.poll || null,
+      hashtags: original.hashtags || [],
+      pinnedBy: null,
       createdAt: Date.now(),
       likes: [],
       comentarios: [],
@@ -1379,6 +1553,70 @@ io.on('connection', (socket) => {
       alvoId
     );
     io.emit('usuarioAtualizado', { id: alvoId, banned: false });
+  });
+
+  // ---------- Admin: suspender usuário temporariamente ----------
+  socket.on('adminSuspenderUsuario', ({ alvoId, duracaoHoras = 24, motivo = 'Suspensão temporária' } = {}) => {
+    if (!socket.usuario || socket.usuario.role !== 'admin') {
+      socket.emit('erroAcao', { error: 'Acesso restrito.' });
+      return;
+    }
+    const usuario = obterUsuarioPorId(alvoId);
+    if (!usuario) {
+      socket.emit('erroAcao', { error: 'Usuário não encontrado.' });
+      return;
+    }
+    if (usuario.role === 'admin') {
+      socket.emit('erroAcao', { error: 'Não é possível suspender outro admin.' });
+      return;
+    }
+
+    const horas = Math.max(0.25, Number(duracaoHoras) || 24);
+    const ate = Date.now() + horas * 3600 * 1000;
+
+    usersDb.get('users').find({ id: alvoId }).assign({
+      suspendedUntil: ate,
+      suspendedReason: String(motivo).slice(0, 280),
+      suspendedAt: Date.now(),
+      suspendedBy: socket.usuario.id
+    }).write();
+    revogarSessoesDoUsuario(alvoId);
+    io.to(`user:${alvoId}`).emit('usuarioSuspenso', { motivo: String(motivo), ate });
+    notificarAdmins(
+      `${usuario.name} (@${usuario.handle}) foi suspenso por ${socket.usuario.name} até ${new Date(ate).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}.`,
+      'banimento',
+      alvoId
+    );
+    io.emit('usuarioAtualizado', { id: alvoId, suspendedUntil: ate });
+    socket.emit('acaoOk', { ok: true });
+  });
+
+  // ---------- Admin: des-suspender usuário ----------
+  socket.on('adminDesSuspenderUsuario', ({ alvoId } = {}) => {
+    if (!socket.usuario || socket.usuario.role !== 'admin') {
+      socket.emit('erroAcao', { error: 'Acesso restrito.' });
+      return;
+    }
+    const usuario = obterUsuarioPorId(alvoId);
+    if (!usuario) {
+      socket.emit('erroAcao', { error: 'Usuário não encontrado.' });
+      return;
+    }
+
+    usersDb.get('users').find({ id: alvoId }).assign({
+      suspendedUntil: 0,
+      suspendedReason: '',
+      suspendedAt: 0,
+      suspendedBy: ''
+    }).write();
+
+    notificarAdmins(
+      `${usuario.name} (@${usuario.handle}) teve a suspensão encerrada por ${socket.usuario.name}.`,
+      'banimento',
+      alvoId
+    );
+    io.emit('usuarioAtualizado', { id: alvoId, suspendedUntil: 0 });
+    socket.emit('acaoOk', { ok: true });
   });
 
   // ---------- Admin: forçar deletar post de outro usuário ----------
@@ -1531,6 +1769,64 @@ io.on('connection', (socket) => {
       );
       if (notif) io.to(`user:${alvoId}`).emit('notificacao', notif);
     }
+  });
+
+  // ---------- Votar em enquete ----------
+  socket.on('votarEnquete', ({ postId, optionIndex } = {}) => {
+    const userId = socket.userId;
+    const post = postsDb.get('posts').find({ id: postId }).value();
+    if (!post || post.type !== 'poll' || !post.poll) {
+      socket.emit('erroAcao', { error: 'Enquete não encontrada.' });
+      return;
+    }
+    const opcoes = post.poll.options;
+    if (!Array.isArray(opcoes) || !Number.isInteger(optionIndex) || optionIndex < 0 || optionIndex >= opcoes.length) {
+      socket.emit('erroAcao', { error: 'Opção inválida.' });
+      return;
+    }
+    // Regra de negócio: um usuário só pode votar uma única vez
+    const jaVotou = opcoes.some((o) => (o.votes || []).includes(userId));
+    if (jaVotou) {
+      socket.emit('erroAcao', { error: 'Você já votou nesta enquete.' });
+      return;
+    }
+    opcoes[optionIndex].votes = [...(opcoes[optionIndex].votes || []), userId];
+    postsDb.get('posts').find({ id: postId }).assign(post).write();
+    io.emit('postAtualizado', post);
+
+    if (post.authorId !== userId) {
+      const quem = obterUsuarioPorId(userId);
+      const notif = criarNotificacao(post.authorId, `${quem ? quem.name : 'Alguém'} votou na sua enquete`, 'poll', userId);
+      if (notif) io.to(`user:${post.authorId}`).emit('notificacao', notif);
+    }
+  });
+
+  // ---------- Fixar post (somente o autor; máx. MAX_FIXADOS) ----------
+  socket.on('fixarPost', ({ postId } = {}) => {
+    const userId = socket.userId;
+    const post = postsDb.get('posts').find({ id: postId }).value();
+    if (!post) { socket.emit('erroAcao', { error: 'Post não encontrado.' }); return; }
+    if (post.authorId !== userId) { socket.emit('erroAcao', { error: 'Você só pode fixar os seus próprios posts.' }); return; }
+    if (post.pinnedBy === userId) { socket.emit('erroAcao', { error: 'Este post já está fixado.' }); return; }
+
+    const fixados = postsDb.get('posts').filter((p) => p.pinnedBy === userId).value();
+    if (fixados.length >= MAX_FIXADOS) {
+      socket.emit('erroAcao', { error: `Limite de ${MAX_FIXADOS} posts fixados atingido.` });
+      return;
+    }
+    postsDb.get('posts').find({ id: postId }).assign({ pinnedBy: userId }).write();
+    io.emit('postAtualizado', { ...post, pinnedBy: userId });
+  });
+
+  // ---------- Desafixar post ----------
+  socket.on('desafixarPost', ({ postId } = {}) => {
+    const userId = socket.userId;
+    const post = postsDb.get('posts').find({ id: postId }).value();
+    if (!post) { socket.emit('erroAcao', { error: 'Post não encontrado.' }); return; }
+    if (post.authorId !== userId) { socket.emit('erroAcao', { error: 'Você só pode desafixar os seus próprios posts.' }); return; }
+    if (!post.pinnedBy) { socket.emit('erroAcao', { error: 'Este post não está fixado.' }); return; }
+    postsDb.get('posts').find({ id: postId }).assign({ pinnedBy: null }).write();
+    io.emit('postAtualizado', { ...post, pinnedBy: null });
   });
 
   // ---------- Chamada de voz (WebRTC via Socket.io) ----------

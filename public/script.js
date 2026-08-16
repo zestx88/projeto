@@ -21,9 +21,14 @@ let notificacoes = [];
 let socketConfigurado = false;
 let todosUsuariosAdmin = [];
 let adminUserFiltro = '';
+let modoEnquete = false;
+let pollOptionsCount = 2;
+let hashtagAtual = '';
+let hashtagsPopulares = [];
 
 const TOKEN_KEY = 'tadashi_token';
 const MAX_STRIKES = 3;
+const MAX_OPCOES_ENQUETE = 6;
 
 // ---------- DOM ----------
 const telaLogin = document.getElementById('tela-login');
@@ -64,6 +69,24 @@ const btnRemoverVideo = document.getElementById('btn-remover-video');
 const btnAddVideoArquivo = document.getElementById('input-arquivo-video');
 const btnAddImagemArquivo = document.getElementById('input-arquivo-imagem');
 
+// Enquete (compositor)
+const btnAddEnquete = document.getElementById('btn-add-enquete');
+const previewEnqueteWrap = document.getElementById('preview-enquete-wrap');
+const pollPergunta = document.getElementById('poll-pergunta');
+const pollOpcoesEl = document.getElementById('poll-opcoes');
+const btnAddOpcao = document.getElementById('btn-add-opcao');
+const btnRemoverEnquete = document.getElementById('btn-remover-enquete');
+const pollOpcoesContador = document.getElementById('poll-opcoes-contador');
+
+// Hashtag
+const btnVoltarHashtag = document.getElementById('btn-voltar-hashtag');
+const hashtagTituloEl = document.getElementById('hashtag-titulo');
+const listaHashtagEl = document.getElementById('lista-hashtag');
+
+// Posts fixados no perfil
+const secaoFixadosPerfil = document.getElementById('secao-fixados-perfil');
+const listaPostsFixadosPerfilEl = document.getElementById('lista-posts-fixados-perfil');
+
 const listaPostsEl = document.getElementById('lista-posts');
 const listaVideosEl = document.getElementById('lista-videos');
 const carregandoMaisEl = document.getElementById('carregando-mais');
@@ -76,6 +99,7 @@ const paginas = {
   explorar: document.getElementById('pagina-explorar'),
   videos: document.getElementById('pagina-videos'),
   perfil: document.getElementById('pagina-perfil'),
+  hashtag: document.getElementById('pagina-hashtag'),
   notificacoes: document.getElementById('pagina-notificacoes'),
   mensagens: document.getElementById('pagina-mensagens'),
   admin: document.getElementById('pagina-admin')
@@ -458,6 +482,20 @@ function formatarMencoes(textoEscapado) {
   );
 }
 
+// Formata o texto de um post: @menções e #hashtags em elementos clicáveis.
+function formatarTextoPost(texto) {
+  let html = escaparHtml(texto);
+  html = html.replace(
+    /@([a-zA-Z0-9_]{2,30})/g,
+    (m, handle) => `<span class="mencao-link" data-mencao="${escaparAttr(m)}">${m}</span>`
+  );
+  html = html.replace(
+    /#([\p{L}\p{N}_]+)/gu,
+    (m, tag) => `<span class="hashtag-link" data-hashtag="${escaparAttr(m)}">${m}</span>`
+  );
+  return html;
+}
+
 // ============================================================
 // FEED / POSTS
 // ============================================================
@@ -482,18 +520,52 @@ function renderizarFeed() {
 
   if (paginaAtual === 'videos') renderizarVideos();
   if (paginaAtual === 'explorar') renderizarBusca(inputBusca.value.trim().toLowerCase());
+  if (paginaAtual === 'hashtag') renderizarPaginaHashtag();
   if (paginaAtual === 'perfil' && perfilSelecionadoId) {
     // re-render leve dos posts do perfil a partir do cache quando possível
   }
 }
 
+function usuarioJaRepostouOriginal(p) {
+  if (!usuarioAtual) return false;
+  if (p.repostBy && p.repostBy.id === usuarioAtual.id) return true;
+  const ref = p.originalId || p.id;
+  return posts.some((pp) => pp.originalId === ref && pp.repostBy && pp.repostBy.id === usuarioAtual.id);
+}
+
+function templateEnquete(p) {
+  if (p.type !== 'poll' || !p.poll) return '';
+  const opcoes = p.poll.options || [];
+  const total = opcoes.reduce((s, o) => s + ((o.votes || []).length), 0);
+  const meuVoto = opcoes.some((o) => (o.votes || []).includes(usuarioAtual.id));
+  const opcoesHtml = opcoes.map((o, i) => {
+    const qtd = (o.votes || []).length;
+    const pct = total > 0 ? Math.round((qtd * 100) / total) : 0;
+    if (meuVoto) {
+      return `<div class="poll-resultado-linha ${(o.votes || []).includes(usuarioAtual.id) ? 'poll-minha' : ''}">
+        <div class="poll-resultado-topo"><span>${escaparHtml(o.text)}</span><span>${qtd} voto${qtd === 1 ? '' : 's'} (${pct}%)</span></div>
+        <div class="poll-bar"><div class="poll-bar-preenchida" style="width:${pct}%"></div></div>
+      </div>`;
+    }
+    return `<button type="button" class="poll-opcao-voto" data-poll-vote="${i}">🔘 ${escaparHtml(o.text)}</button>`;
+  }).join('');
+  return `<div class="poll-bloco">
+    <div class="poll-pergunta">🗳️ ${escaparHtml(p.poll.question)}</div>
+    <div class="poll-opcoes">${opcoesHtml}</div>
+    <div class="poll-total">Total: ${total} ${total === 1 ? 'voto' : 'votos'}</div>
+  </div>`;
+}
+
 function templatePost(p) {
   const jaCurtiu = (p.likes || []).includes(usuarioAtual.id);
   const totalComentarios = (p.comentarios || []).length;
+  const jaRepostou = usuarioJaRepostouOriginal(p);
 
   const labelRepost = p.repostBy
     ? `<div class="post-repost-label">🔁 Repostado por ${p.repostBy.id === usuarioAtual.id ? 'você' : escaparHtml(p.repostBy.name)}</div>`
     : '';
+
+  const pinIndicador = p.pinnedBy ? '<span class="post-pin-indicador" title="Publicação fixada">📌</span>' : '';
 
   const imagemHtml = p.imagem
     ? `<img class="post-imagem" src="${escaparAttr(p.imagem)}" alt="imagem do post" onerror="this.style.display='none'">`
@@ -508,6 +580,11 @@ function templatePost(p) {
     (p.repostBy && p.repostBy.id === usuarioAtual.id) ||
     usuarioAtual.role === 'admin';
 
+  // Somente o autor pode fixar/desafixar o próprio post (e reposts não são fixáveis)
+  const pinAcao = p.authorId === usuarioAtual.id && !p.repostBy
+    ? `<button type="button" class="post-acao pin ${p.pinnedBy ? 'pinned' : ''}" data-acao="${p.pinnedBy ? 'desafixar' : 'fixar'}" title="${p.pinnedBy ? 'Desafixar publicação' : 'Fixar publicação'}">📌</button>`
+    : '';
+
   const comentariosHtml = (p.comentarios || []).map((c) => `
     <div class="comentario-item"><strong>${escaparHtml(c.autor)}</strong> ${formatarMencoes(escaparHtml(c.texto))}</div>
   `).join('');
@@ -521,20 +598,23 @@ function templatePost(p) {
           <span class="post-nome post-avatar-link" data-user="${escaparAttr(p.authorId)}">${escaparHtml(p.authorName)}</span>
           <span class="post-handle">${escaparHtml(p.authorHandle)}</span>
           <span class="post-tempo">· ${tempoRelativo(p.createdAt)}</span>
+          ${pinIndicador}
         </div>
-        <div class="post-texto">${formatarMencoes(escaparHtml(p.texto))}</div>
+        <div class="post-texto">${formatarTextoPost(p.texto)}</div>
+        ${templateEnquete(p)}
         ${imagemHtml}
         ${videoHtml}
         <div class="post-acoes">
           <button type="button" class="post-acao comentario" data-acao="comentario">
             💬 <span>${totalComentarios}</span>
           </button>
-          <button type="button" class="post-acao repost ${p.repostBy && p.repostBy.id === usuarioAtual.id ? 'repostado' : ''}" data-acao="repost">
+          <button type="button" class="post-acao repost ${jaRepostou ? 'repostado' : ''}" data-acao="repost" title="${jaRepostou ? 'Você já repostou este post' : 'Repostar'}">
             🔁
           </button>
           <button type="button" class="post-acao like ${jaCurtiu ? 'curtido' : ''}" data-acao="like">
             <span class="icone-coracao">${jaCurtiu ? '❤️' : '🤍'}</span> <span class="qtd-likes">${(p.likes || []).length}</span>
           </button>
+          ${pinAcao}
           ${p.authorId !== usuarioAtual.id ? '<button type="button" class="post-acao reportar" data-acao="reportar" title="Reportar">🚩</button>' : ''}
           ${podeDeletar ? '<button type="button" class="post-acao deletar" data-acao="deletar">🗑️</button>' : '<span></span>'}
         </div>
@@ -562,6 +642,19 @@ function ligarEventosDosPostsEm(container) {
 
     el.querySelector('[data-acao="repost"]')?.addEventListener('click', () => {
       socket.emit('repostar', { postId });
+    });
+
+    el.querySelector('[data-acao="fixar"]')?.addEventListener('click', () => {
+      socket.emit('fixarPost', { postId });
+    });
+    el.querySelector('[data-acao="desafixar"]')?.addEventListener('click', () => {
+      socket.emit('desafixarPost', { postId });
+    });
+
+    el.querySelectorAll('[data-poll-vote]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        socket.emit('votarEnquete', { postId, optionIndex: Number(btn.dataset.pollVote) });
+      });
     });
 
     const btnDeletar = el.querySelector('[data-acao="deletar"]');
@@ -663,6 +756,11 @@ function configurarSocket() {
       // religa eventos só neste post
       novo.querySelector('[data-acao="like"]')?.addEventListener('click', () => socket.emit('curtir', { postId: postAtualizado.id }));
       novo.querySelector('[data-acao="repost"]')?.addEventListener('click', () => socket.emit('repostar', { postId: postAtualizado.id }));
+      novo.querySelector('[data-acao="fixar"]')?.addEventListener('click', () => socket.emit('fixarPost', { postId: postAtualizado.id }));
+      novo.querySelector('[data-acao="desafixar"]')?.addEventListener('click', () => socket.emit('desafixarPost', { postId: postAtualizado.id }));
+      novo.querySelectorAll('[data-poll-vote]').forEach((btn) => {
+        btn.addEventListener('click', () => socket.emit('votarEnquete', { postId: postAtualizado.id, optionIndex: Number(btn.dataset.pollVote) }));
+      });
       const btnDel = novo.querySelector('[data-acao="deletar"]');
       if (btnDel) {
         btnDel.addEventListener('click', () => {
@@ -690,13 +788,27 @@ function configurarSocket() {
     }
 
     if (paginaAtual === 'videos') renderizarVideos();
+    if (paginaAtual === 'hashtag') renderizarPaginaHashtag();
     if (paginaAtual === 'perfil' && perfilSelecionadoId) abrirPerfil(perfilSelecionadoId);
   });
 
-  socket.on('usuarioAtualizado', ({ id, avatar, name, handle }) => {
+  socket.on('usuarioAtualizado', ({ id, avatar, name, handle, banned, suspendedUntil, strikes, role }) => {
     const idx = todosUsuarios.findIndex((u) => u.id === id);
     if (idx !== -1) {
       todosUsuarios[idx] = { ...todosUsuarios[idx], avatar, name, handle };
+    }
+
+    // Sincroniza a lista do painel admin (ban, suspensão, strikes, cargo)
+    const idxAdmin = todosUsuariosAdmin.findIndex((u) => u.id === id);
+    if (idxAdmin !== -1 && (banned !== undefined || suspendedUntil !== undefined || strikes !== undefined || role !== undefined)) {
+      todosUsuariosAdmin[idxAdmin] = {
+        ...todosUsuariosAdmin[idxAdmin],
+        ...(banned !== undefined ? { banned } : {}),
+        ...(suspendedUntil !== undefined ? { suspendedUntil } : {}),
+        ...(strikes !== undefined ? { strikes } : {}),
+        ...(role !== undefined ? { role } : {})
+      };
+      if (paginaAtual === 'admin' && !tabUsers.classList.contains('hidden')) carregarUsuariosAdmin();
     }
 
     if (usuarioAtual && usuarioAtual.id === id) {
@@ -748,6 +860,17 @@ function configurarSocket() {
       limparSessaoLocal();
       mostrarTelaLogin();
       mostrarToast('Sua conta foi banida.');
+    }
+  });
+
+  // Evento recebido quando o usuário é suspenso temporariamente
+  socket.on('usuarioSuspenso', ({ motivo, ate }) => {
+    if (usuarioAtual) {
+      const dataTexto = ate ? new Date(ate).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '';
+      alert(`Sua conta foi suspensa temporariamente até ${dataTexto}. ${motivo || ''}`.trim());
+      limparSessaoLocal();
+      mostrarTelaLogin();
+      mostrarToast('Sua conta foi suspensa temporariamente.');
     }
   });
 
@@ -908,6 +1031,23 @@ function configurarSocket() {
 function configurarEventos() {
   inputPost.addEventListener('input', atualizarEstadoCompositor);
 
+  // Enquete (compositor)
+  btnAddEnquete.addEventListener('click', () => setModoEnquete(!modoEnquete));
+  btnAddOpcao.addEventListener('click', () => {
+    if (pollOptionsCount < MAX_OPCOES_ENQUETE) {
+      pollOptionsCount++;
+      renderPollOpcoesCriador();
+      atualizarEstadoCompositor();
+    }
+  });
+  btnRemoverEnquete.addEventListener('click', () => setModoEnquete(false));
+  pollPergunta.addEventListener('input', atualizarEstadoCompositor);
+
+  // Página de hashtag: voltar
+  btnVoltarHashtag.addEventListener('click', () => {
+    irParaPagina('inicio');
+  });
+
   btnAddImagem.addEventListener('click', () => btnAddImagemArquivo.click());
   btnAddImagemArquivo.addEventListener('change', () => {
     const arquivo = btnAddImagemArquivo.files[0];
@@ -1024,13 +1164,20 @@ function configurarEventos() {
   btnPostar.addEventListener('click', () => {
     const texto = inputPost.value.trim();
     if (!usuarioAtual || !socket) return;
-    if (!texto && !imagemSelecionada && !videoSelecionado) return;
 
-    socket.emit('novoPost', {
-      texto,
-      imagem: imagemSelecionada,
-      video: videoSelecionado
-    });
+    const payload = { texto, imagem: imagemSelecionada, video: videoSelecionado };
+
+    if (modoEnquete) {
+      const pergunta = pollPergunta.value.trim();
+      const opcoes = coletarOpcoesEnquete();
+      if (!pergunta || opcoes.length < 2) return;
+      payload.tipo = 'poll';
+      payload.poll = { question: pergunta, options: opcoes };
+    } else if (!texto && !imagemSelecionada && !videoSelecionado) {
+      return;
+    }
+
+    socket.emit('novoPost', payload);
 
     inputPost.value = '';
     contadorCaracteres.textContent = '280';
@@ -1043,6 +1190,7 @@ function configurarEventos() {
     previewVideoWrap.classList.add('hidden');
     previewVideo.src = '';
     btnAddVideoArquivo.value = '';
+    if (modoEnquete) setModoEnquete(false);
   });
 
   btnTema.addEventListener('click', alternarTema);
@@ -1205,6 +1353,13 @@ function configurarEventos() {
         irParaPagina('perfil');
       }
     }
+
+    // Clique numa hashtag (#tag) abre a página de hashtag
+    const hashtag = e.target.closest('.hashtag-link');
+    if (hashtag && hashtag.dataset.hashtag) {
+      const tag = hashtag.dataset.hashtag.replace(/^#/, '');
+      abrirHashtag(tag);
+    }
   });
 
   inputBusca.addEventListener('input', () => {
@@ -1246,7 +1401,66 @@ function atualizarEstadoCompositor() {
   contadorCaracteres.classList.toggle('limite', restante <= 20);
   const temTexto = inputPost.value.trim().length > 0;
   const temMidia = Boolean(imagemSelecionada || videoSelecionado);
-  btnPostar.disabled = (!temTexto && !temMidia) || restante < 0;
+  let podePostar;
+  if (modoEnquete) {
+    const perguntaOk = pollPergunta.value.trim().length > 0;
+    const opcoes = coletarOpcoesEnquete();
+    podePostar = perguntaOk && opcoes.length >= 2;
+  } else {
+    podePostar = (temTexto || temMidia) && restante >= 0;
+  }
+  btnPostar.disabled = !podePostar;
+  btnPostar.textContent = modoEnquete ? 'Publicar enquete' : 'Postar';
+}
+
+function renderPollOpcoesCriador() {
+  pollOpcoesEl.innerHTML = '';
+  for (let i = 0; i < pollOptionsCount; i++) {
+    const linha = document.createElement('div');
+    linha.className = 'poll-opcao-linha';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = 120;
+    input.className = 'poll-opcao-input';
+    input.placeholder = `Opção ${i + 1}`;
+    linha.appendChild(input);
+    if (pollOptionsCount > 2) {
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'btn-remover-img poll-rm-opcao';
+      rm.textContent = '✕';
+      rm.addEventListener('click', () => {
+        pollOptionsCount = Math.max(2, pollOptionsCount - 1);
+        renderPollOpcoesCriador();
+        atualizarEstadoCompositor();
+      });
+      linha.appendChild(rm);
+    }
+    input.addEventListener('input', atualizarEstadoCompositor);
+    pollOpcoesEl.appendChild(linha);
+  }
+  pollOpcoesContador.textContent = `${pollOptionsCount}/${MAX_OPCOES_ENQUETE}`;
+  btnAddOpcao.disabled = pollOptionsCount >= MAX_OPCOES_ENQUETE;
+}
+
+function coletarOpcoesEnquete() {
+  return Array.from(pollOpcoesEl.querySelectorAll('.poll-opcao-input'))
+    .map((i) => i.value.trim())
+    .filter(Boolean);
+}
+
+function setModoEnquete(ativo) {
+  modoEnquete = ativo;
+  previewEnqueteWrap.classList.toggle('hidden', !ativo);
+  if (ativo) {
+    renderPollOpcoesCriador();
+    pollPergunta.value = '';
+    btnAddEnquete.classList.add('ativo');
+  } else {
+    btnAddEnquete.classList.remove('ativo');
+    pollOptionsCount = 2;
+  }
+  atualizarEstadoCompositor();
 }
 
 // ============================================================
@@ -1408,8 +1622,26 @@ function ehStaff(u) {
   return u && (u.role === 'admin' || u.role === 'moderador');
 }
 
+function ehSuspenso(u) {
+  return !!(u && u.suspendedUntil && u.suspendedUntil > Date.now());
+}
+
+function formatarDataAdmin(ts) {
+  if (!ts) return '';
+  try {
+    return new Date(ts).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+  } catch {
+    return '';
+  }
+}
+
 function templateAdminUser(u) {
-  const status = u.banned ? '🔴 Banido' : '🟢 Ativo';
+  const suspenso = ehSuspenso(u);
+  const status = u.banned
+    ? '🔴 Banido'
+    : suspenso
+      ? `🟠 Suspenso até ${formatarDataAdmin(u.suspendedUntil)}`
+      : '🟢 Ativo';
   const ehAdmin = ehStaff(usuarioAtual) && usuarioAtual.role === 'admin';
   const ehMod = ehStaff(usuarioAtual);
   const rotuloCargo = u.role === 'admin' ? 'Admin' : (u.role === 'moderador' ? 'Moderador' : 'User');
@@ -1418,6 +1650,8 @@ function templateAdminUser(u) {
   if (ehMod && u.role !== 'admin') {
     if (u.banned) acoes.push(`<button class="btn btn-sm btn-unban-user" data-userid="${escaparAttr(u.id)}">Desbanir</button>`);
     else acoes.push(`<button class="btn btn-sm btn-ban-user" data-userid="${escaparAttr(u.id)}">Banir</button>`);
+    if (suspenso) acoes.push(`<button class="btn btn-sm btn-unsuspend-user" data-userid="${escaparAttr(u.id)}">↩️ Des-suspender</button>`);
+    else if (!u.banned) acoes.push(`<button class="btn btn-sm btn-suspend-user" data-userid="${escaparAttr(u.id)}">⏸️ Suspender</button>`);
     acoes.push(`<button class="btn btn-sm btn-strike-user" data-userid="${escaparAttr(u.id)}">+1 Strike</button>`);
     if (u.strikes > 0) acoes.push(`<button class="btn btn-sm btn-remove-strike" data-userid="${escaparAttr(u.id)}">-1 Strike</button>`);
   }
@@ -1431,6 +1665,10 @@ function templateAdminUser(u) {
     }
   }
 
+  const detalheExtra = suspenso
+    ? `<small>Suspenso até ${formatarDataAdmin(u.suspendedUntil)}${u.suspendedReason ? ` — ${escaparHtml(u.suspendedReason)}` : ''}</small>`
+    : '';
+
   return `
     <div class="admin-user-item" data-user="${escaparAttr(u.id)}">
       <img class="avatar avatar-sm" src="${escaparAttr(u.avatar)}" alt="avatar">
@@ -1438,8 +1676,9 @@ function templateAdminUser(u) {
         <strong>${escaparHtml(u.name)}</strong>
         <span>${escaparHtml(u.handle)}</span>
         <small>Strikes: ${u.strikes || 0}/${MAX_STRIKES} | Cargo: ${rotuloCargo}</small>
+        ${detalheExtra}
       </div>
-      <span class="user-status ${u.banned ? 'banido' : 'ativo'}">${status}</span>
+      <span class="user-status ${u.banned ? 'banido' : (suspenso ? 'suspenso' : 'ativo')}">${status}</span>
       <div class="admin-user-acoes">${acoes.join('')}</div>
     </div>
   `;
@@ -1529,6 +1768,28 @@ function ligarAcoesAdminUsuarios() {
       if (resp.ok) { mostrarToast('Usuário desbanido.'); atualizar(); carregarReportsAdmin(); }
     });
   });
+  listaAdminUsers.querySelectorAll('.btn-suspend-user').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const alvoId = btn.dataset.userid;
+      const duracaoTexto = prompt('Duração da suspensão em HORAS (ex.: 24 = 1 dia, 72 = 3 dias):', '24');
+      if (duracaoTexto === null) return;
+      const horas = Number(duracaoTexto.replace(',', '.'));
+      if (!Number.isFinite(horas) || horas <= 0) { mostrarToast('Duração inválida.'); return; }
+      const motivo = prompt('Motivo da suspensão:') || 'Suspensão temporária';
+      const { resp } = await api(`/api/admin/users/${alvoId}/suspend`, {
+        method: 'POST', body: JSON.stringify({ duracaoHoras: horas, motivo })
+      });
+      if (resp.ok) { mostrarToast(`Usuário suspenso por ${horas}h.`); atualizar(); }
+    });
+  });
+  listaAdminUsers.querySelectorAll('.btn-unsuspend-user').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const alvoId = btn.dataset.userid;
+      if (!confirm('Encerrar a suspensão deste usuário agora?')) return;
+      const { resp } = await api(`/api/admin/users/${alvoId}/unsuspend`, { method: 'POST' });
+      if (resp.ok) { mostrarToast('Suspensão encerrada.'); atualizar(); }
+    });
+  });
   listaAdminUsers.querySelectorAll('.btn-strike-user').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const alvoId = btn.dataset.userid;
@@ -1589,6 +1850,7 @@ async function carregarStatsAdmin() {
     ['🚩 Reports', s.totalReports],
     ['⏳ Reports pendentes', s.reportesPendentes],
     ['🚫 Banidos', s.totalBanidos],
+    ['⏸️ Suspensos', s.totalSuspensos],
     ['👑 Admins', s.totalAdmins],
     ['🛡️ Moderadores', s.totalModeradores],
     ['⚠️ Strikes (total)', s.totalStrikes]
@@ -1660,7 +1922,8 @@ function irParaPagina(nome) {
     if (id) abrirPerfil(id);
   }
   if (nome === 'videos') renderizarVideos();
-  if (nome === 'explorar') renderizarBusca(inputBusca.value.trim().toLowerCase());
+  if (nome === 'explorar') { carregarHashtagsPopulares(); renderizarBusca(inputBusca.value.trim().toLowerCase()); }
+  if (nome === 'hashtag') renderizarPaginaHashtag();
     if (nome === 'mensagens' && usuarioAtual) carregarMensagens();
   if (nome === 'notificacoes') marcarNotificacoesLidas();
   if (nome === 'admin' && usuarioAtual && ehStaff(usuarioAtual)) carregarAdminPanel();
@@ -1697,8 +1960,18 @@ async function abrirPerfil(userId) {
   const postsDoPerfil = resp.ok && Array.isArray(data) ? data : [];
   perfilPostsQtd.textContent = postsDoPerfil.length;
 
-  listaPostsPerfilEl.innerHTML = postsDoPerfil.length
-    ? postsDoPerfil.map((p) => templatePost(p)).join('')
+  // Posts fixados aparecem em uma seção especial no topo do perfil
+  const fixados = postsDoPerfil.filter((p) => p.pinnedBy === usuario.id);
+  const naoFixados = postsDoPerfil.filter((p) => p.pinnedBy !== usuario.id);
+
+  secaoFixadosPerfil.classList.toggle('hidden', fixados.length === 0);
+  listaPostsFixadosPerfilEl.innerHTML = fixados.length
+    ? fixados.map((p) => templatePost(p)).join('')
+    : '';
+  if (fixados.length) ligarEventosDosPostsEm(listaPostsFixadosPerfilEl);
+
+  listaPostsPerfilEl.innerHTML = naoFixados.length
+    ? naoFixados.map((p) => templatePost(p)).join('')
     : '<div class="notificacao-vazia">Nenhum post ainda.</div>';
 
   ligarEventosDosPostsEm(listaPostsPerfilEl);
@@ -1892,14 +2165,23 @@ async function enviarVideoParaAmigo(amigoId) {
 // ============================================================
 function renderizarBusca(termo) {
   if (!termo) {
-    listaBuscaEl.innerHTML = '<div class="notificacao-vazia">Digite algo para buscar posts, pessoas, nomes ou @handles.</div>';
+    const pills = hashtagsPopulares.length
+      ? `<section class="resultados-hashtags">
+          <div class="titulo-busca">Hashtags populares</div>
+          <div class="hashtag-pills">
+            ${hashtagsPopulares.map((h) => `<span class="hashtag-pill hashtag-link" data-hashtag="#${escaparAttr(h.tag)}">#${escaparHtml(h.tag)} <small>${h.count}</small></span>`).join('')}
+          </div>
+        </section>`
+      : '';
+    listaBuscaEl.innerHTML = pills + '<div class="notificacao-vazia">Digite algo para buscar posts, pessoas, nomes, @handles ou hashtags.</div>';
     return;
   }
 
-  const busca = termo.toLowerCase();
+  const busca = termo.toLowerCase().replace(/^#/, '');
 
   const resultadosPosts = posts.filter((p) =>
     (p.texto || '').toLowerCase().includes(busca) ||
+    (p.hashtags || []).includes(busca) ||
     (p.authorName || '').toLowerCase().includes(busca) ||
     (p.authorHandle || '').toLowerCase().includes(busca)
   );
@@ -1938,6 +2220,33 @@ function renderizarBusca(termo) {
       socket.emit('seguir', { alvoId: botao.dataset.followId });
     });
   });
+}
+
+function abrirHashtag(tag) {
+  hashtagAtual = String(tag || '').toLowerCase().replace(/^#/, '');
+  renderizarPaginaHashtag();
+  irParaPagina('hashtag');
+}
+
+function renderizarPaginaHashtag() {
+  if (!usuarioAtual) return;
+  const tag = hashtagAtual;
+  hashtagTituloEl.textContent = '#' + tag;
+  const comPost = posts.filter((p) => (p.hashtags || []).includes(tag));
+  listaHashtagEl.innerHTML = comPost.length
+    ? comPost.map((p) => templatePost(p)).join('')
+    : '<div class="notificacao-vazia">Nenhum post com esta hashtag.</div>';
+  ligarEventosDosPostsEm(listaHashtagEl);
+}
+
+async function carregarHashtagsPopulares() {
+  try {
+    const { resp, data } = await api('/api/hashtags/populares');
+    hashtagsPopulares = resp.ok && Array.isArray(data) ? data : [];
+  } catch {
+    hashtagsPopulares = [];
+  }
+  if (paginaAtual === 'explorar' && !inputBusca.value.trim()) renderizarBusca('');
 }
 
 function templateUsuarioBusca(u) {
